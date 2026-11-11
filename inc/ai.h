@@ -1,0 +1,112 @@
+#ifndef __AI_H__
+#define __AI_H__
+
+namespace ai
+{
+    class XYZT
+    {
+        float x;
+        float y;
+        float z;
+        float type;
+    };
+
+    class XYZ
+    {
+        float x;
+        float y;
+        float z;
+    };
+
+    class Input
+    {
+        public:
+        
+        float time;
+
+        float health;
+        float armor;
+
+        float currentWeapon;
+        float currentMagazine;
+        float currentTotalAmmo;
+
+        float viewAngleX;
+        float viewAngleY;
+
+        float speedX;
+        float speedY;
+        float speedZ;
+
+        float punchAngleX;
+        float punchAngleY;
+
+        float view[16];
+        XYZT nearestInvisibleEnemyNoises[4];
+        XYZ nearestVisibleEnemies[4];
+        XYZ nearestFriends[4];
+    };
+
+    class NormalizedInput : public Input
+    {
+    };
+
+    class SourceInput : public Input
+    {
+        public:
+        // Normalize all values to [0; +1].
+        NormalizedInput normalize() const noexcept;
+    };
+
+    class Output
+    {
+        public:
+
+        float fire;
+        float reload;
+        float shift;
+        float alt;
+        
+        // TODO: What about weapon selection?
+
+        float changeViewAngleX;
+        float changeViewAngleY;
+
+        float changeSpeedX;
+        float changeSpeedY;
+        float changeSpeedZ;
+
+        // ...
+    };
+
+    class NormalizedOutput : public Output
+    {
+    };
+
+    class SourceOutput : public Output
+    {
+        public:
+        // Normalize all values to [0; +1].
+        const NormalizedOutput normalize() const noexcept;
+    };
+
+    class Brain
+    {
+        public:
+
+        Brain();
+
+        SourceInput& getSourceInput() noexcept;
+
+        void tick() noexcept;
+
+        const NormalizedOutput& getNormalizedOutput() const noexcept;
+
+        private:
+
+        SourceInput sourceInput;
+        NormalizedOutput sourceOutput;
+    };
+}
+
+#endif
