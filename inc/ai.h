@@ -5,14 +5,18 @@ namespace ai
 {
     class XYZT
     {
+        public:
+        
         float x;
         float y;
         float z;
-        float type;
+        float t;
     };
 
     class XYZ
     {
+        public:
+
         float x;
         float y;
         float z;
@@ -55,7 +59,7 @@ namespace ai
     {
         public:
         // Normalize all values to [0; +1].
-        NormalizedInput normalize() const noexcept;
+        NormalizedInput normalize();
     };
 
     class Output
@@ -87,7 +91,7 @@ namespace ai
     {
         public:
         // Normalize all values to [0; +1].
-        const NormalizedOutput normalize() const noexcept;
+        NormalizedOutput normalize();
     };
 
     class Brain
@@ -96,11 +100,11 @@ namespace ai
 
         Brain();
 
-        SourceInput& getSourceInput() noexcept;
+        SourceInput& getSourceInput();
 
         void tick() noexcept;
 
-        const NormalizedOutput& getNormalizedOutput() const noexcept;
+        const NormalizedOutput& getNormalizedOutput();
 
         private:
 
