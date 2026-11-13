@@ -82,16 +82,16 @@ namespace ai
 
         // ...
     };
-
-    class NormalizedOutput : public Output
-    {
-    };
-
+    
     class SourceOutput : public Output
     {
         public:
-        // Normalize all values to [0; +1].
-        NormalizedOutput normalize();
+    };
+    
+    class NormalizedOutput : public Output
+    {
+	public:
+	SourceOutput source();
     };
 
     class Brain
@@ -104,13 +104,15 @@ namespace ai
 
         void tick() noexcept;
 
-        const NormalizedOutput& getNormalizedOutput();
+        const SourceOutput& getSourceOutput();
 
         private:
 
         SourceInput sourceInput;
-        NormalizedOutput sourceOutput;
+        SourceOutput sourceOutput;
     };
+    
+    
 }
 
 #endif

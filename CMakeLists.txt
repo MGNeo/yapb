@@ -42,6 +42,7 @@ set(YAPB_SRC
 )
 
 add_library(yapb MODULE ${YAPB_SRC})
+
 find_package(Git QUIET)
 
 if(GIT_FOUND)

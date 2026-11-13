@@ -27,6 +27,30 @@ namespace ai
         return (value - min) / (max - min);
     }
 
+    // [0; 1] -> [-inf; +inf]
+    float sourceByInterval(const float value, const float min, const float max)
+    {
+	if (max < min)
+	{
+	    fprintf(stderr, "%s, min > max.\n", __func__);
+	    return 0.f;
+	}
+
+	if (value < 0.f)
+	{
+	    fprintf(stderr, "%s, value < 0.f.\n", __func__);
+	    return 0.f;
+	}
+
+	if (value > 1.f)
+	{
+	    fprintf(stderr, "%s, value > 1.f.\n", __func__);
+	    return 0.f;
+	}
+
+	return  value * (max - min) + min;
+    }
+
     NormalizedInput SourceInput::normalize()
     {
         NormalizedInput normalizedInput;
@@ -77,23 +101,43 @@ namespace ai
         return normalizedInput;
     }
 
-    NormalizedOutput SourceOutput::normalize()
+    SourceOutput NormalizedOutput::source()
     {
-        NormalizedOutput normalizedOutput;
+        SourceOutput sourceOutput;
 
-        normalizedOutput.fire = normalizeByInterval(fire, 0, 1);
-        normalizedOutput.reload = normalizeByInterval(reload, 0, 1);
-        normalizedOutput.shift = normalizeByInterval(shift, 0, 1);
-        normalizedOutput.alt = normalizeByInterval(alt, 0, 1);
+        sourceOutput.fire = sourceByInterval(fire, 0, 1);
+        sourceOutput.reload = sourceByInterval(reload, 0, 1);
+        sourceOutput.shift = sourceByInterval(shift, 0, 1);
+        sourceOutput.alt = sourceByInterval(alt, 0, 1);
 
-        normalizedOutput.changeViewAngleX = normalizeByInterval(changeViewAngleX, 0, 1);
-        normalizedOutput.changeViewAngleY = normalizeByInterval(changeViewAngleY, 0, 1);
+        sourceOutput.changeViewAngleX = sourceByInterval(changeViewAngleX, 0, 1);
+        sourceOutput.changeViewAngleY = sourceByInterval(changeViewAngleY, 0, 1);
 
-        normalizedOutput.changeSpeedX = normalizeByInterval(changeSpeedX, 0, 1);
-        normalizedOutput.changeSpeedY = normalizeByInterval(changeSpeedY, 0, 1);
-        normalizedOutput.changeSpeedZ = normalizeByInterval(changeSpeedZ, 0, 1);
+        sourceOutput.changeSpeedX = sourceByInterval(changeSpeedX, 0, 1);
+        sourceOutput.changeSpeedY = sourceByInterval(changeSpeedY, 0, 1);
+        sourceOutput.changeSpeedZ = sourceByInterval(changeSpeedZ, 0, 1);
 
-        return normalizedOutput;
+        return sourceOutput;
+    }
+
+    Brain::Brain()
+    {
+	// ...
+    }
+
+    SourceInput& Brain::getSourceInput()
+    {
+	return sourceInput;
+    }
+
+    void Brain::tick()
+    {
+
+    }
+
+    const SourceOutput& Brain::getSourceOutput()
+    {
+	return sourceOutput;
     }
 
 }
