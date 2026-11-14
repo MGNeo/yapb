@@ -10,12 +10,13 @@ namespace ai
 	public:
 	SmartFloat(const float min = 0.f, const float max = 1.f);
 	
-	SmartFloat &operator=(const SmartFloat &smartFloat);
-	// Get source value.
-	float get() const;
+	SmartFloat &operator=(const SmartFloat &smart);
+	
+	float getSource() const;
+	void setSource(const float source);
 
-	// Set source valuel.
-	void set(const float value);
+	float getNormalized() const;
+	void setNormalized(const float normalized);
 
 	private:
 	float minSourceValue;

@@ -16,39 +16,62 @@ namespace ai
 	normalizedValue = 0;
     }
 
-    SmartFloat& SmartFloat::operator=(const SmartFloat &smartFloat)
+    SmartFloat& SmartFloat::operator=(const SmartFloat &smart)
     {
-	if (this != &smartFloat)
+	if (this != &smart)
 	{
-	    minSourceValue = smartFloat.minSourceValue;
-	    maxSourceValue = smartFloat.maxSourceValue;
-	    normalizedValue = smartFloat.normalizedValue;
+	    minSourceValue = smart.minSourceValue;
+	    maxSourceValue = smart.maxSourceValue;
+	    normalizedValue = smart.normalizedValue;
 	}
 	return *this;
     }
 
-    float SmartFloat::get() const
+    float SmartFloat::getSource() const
     {
 	return minSourceValue + normalizedValue * (maxSourceValue - minSourceValue);
     }
 
-    void SmartFloat::set(const float sourceValue)
+    void SmartFloat::setSource(const float source)
     {
-	if (sourceValue > maxSourceValue)
+	if (source > maxSourceValue)
 	{
-	    fprintf(stderr, "%s, sourceValue > maxSourceValue.\n", __func__);
+	    fprintf(stderr, "%s, source > maxSourceValue.\n", __func__);
 	    normalizedValue = 1.f;
 	    return;
 	}
 
-	if (sourceValue < minSourceValue)
+	if (source < minSourceValue)
 	{
-	    fprintf(stderr, "%s, sourceValue < minSourceValue.\n", __func__);
+	    fprintf(stderr, "%s, source < minSourceValue.\n", __func__);
 	    normalizedValue = 0.f;
 	    return;
 	}
 	
-	normalizedValue = (sourceValue - minSourceValue) / (maxSourceValue - minSourceValue);
+	normalizedValue = (source - minSourceValue) / (maxSourceValue - minSourceValue);
+    }
+
+    float SmartFloat::getNormalized() const
+    {
+	return normalizedValue;
+    }
+
+    void SmartFloat::setNormalized(const float normalized)
+    {
+	if (normalized > 1.f)
+	{
+	    fprintf(stderr, "%s, normalized > 1.f.\n", __func__);
+	    normalizedValue = 1.f;
+	    return;
+	}
+
+	if (normalized < 0.f)
+	{
+	    fprintf(stderr, "%s, normalized < 0.f.\n", __func__);
+	    normalizedValue = 0.f;
+	    return;
+	}
+	normalizedValue = normalized;
     }
 
     Input::Input() :
@@ -135,9 +158,64 @@ namespace ai
 
     void Brain::tick()
     {
+	size_t i = 0;
+	float inputs[1024];
+
+	inputs[i++] = input.time.getNormalized();
+	inputs[i++] = input.health.getNormalized();
+	inputs[i++] = input.armor.getNormalized();
+	inputs[i++] = input.currentWeapon.getNormalized();
+	inputs[i++] = input.currentMagazine.getNormalized();
+	inputs[i++] = input.currentTotalAmmo.getNormalized();
+	inputs[i++] = input.viewAngleX.getNormalized();
+	inputs[i++] = input.viewAngleY.getNormalized();
+	inputs[i++] = input.speedX.getNormalized();
+	inputs[i++] = input.speedY.getNormalized();
+	inputs[i++] = input.speedZ.getNormalized();
+	inputs[i++] = input.punchAngleX.getNormalized();
+	inputs[i++] = input.punchAngleY.getNormalized();
 	
+	for (size_t v = 0; v < sizeof(input.view) / sizeof(input.view[0]); ++v)
+	{
+	    inputs[i++] = input.view[v].getNormalized();
+	}
+
+        for (size_t n = 0; n < sizeof(input.nearestInvisibleEnemyNoises) / sizeof(input.nearestInvisibleEnemyNoises[0]); ++n)
+        {
+            inputs[i++] = input.nearestInvisibleEnemyNoises[n].x.getNormalized();
+            inputs[i++] = input.nearestInvisibleEnemyNoises[n].y.getNormalized();
+            inputs[i++] = input.nearestInvisibleEnemyNoises[n].f.getNormalized();
+        }
+
+        for (size_t n = 0; n < sizeof(input.nearestVisibleEnemies) / sizeof(input.nearestVisibleEnemies[0]); ++n)
+        {
+            inputs[i++] = input.nearestVisibleEnemies[n].x.getNormalized();
+            inputs[i++] = input.nearestVisibleEnemies[n].y.getNormalized();
+            inputs[i++] = input.nearestVisibleEnemies[n].f.getNormalized();
+        }
+
+        for (size_t n = 0; n < sizeof(input.nearestFriends) / sizeof(input.nearestFriends[0]); ++n)
+        {
+            inputs[i++] = input.nearestFriends[n].x.getNormalized();
+            inputs[i++] = input.nearestFriends[n].y.getNormalized();
+            inputs[i++] = input.nearestFriends[n].f.getNormalized();
+        }
+
+	brain_set_inputs(brain, inputs);
 	brain_tick(brain, 0);
+
+	size_t o = 0;
+	const float* outputs = brain_get_outputs(brain);
 	
+	output.fire.setNormalized(outputs[o++]);
+	output.reload.setNormalized(outputs[o++]);
+	output.shift.setNormalized(outputs[o++]);
+	output.alt.setNormalized(outputs[o++]);
+	output.changeViewAngleX.setNormalized(outputs[o++]);
+	output.changeViewAngleY.setNormalized(outputs[o++]);
+	output.changeSpeedX.setNormalized(outputs[o++]);
+	output.changeSpeedY.setNormalized(outputs[o++]);
+	output.changeSpeedZ.setNormalized(outputs[o++]);
     }
 
     const Output& Brain::getOutput()
