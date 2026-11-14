@@ -1,129 +1,113 @@
 #include <ai.h>
 #include <stdio.h>
+#include <cstdlib>
 
 namespace ai
 {
-    // [-inf; +int] -> [0; 1]
-    float normalizeByInterval(const float value, const float min, const float max)
+    SmartFloat::SmartFloat(const float min, const float max)
     {
-        if (max < min)
-        {
-            fprintf(stderr, "%s, max < min.\n", __func__);
-            return 0.f;
-        }
-
-        if (value < min)
-        {
-            fprintf(stderr, "%s, value < min.\n", __func__);
-            return 0.f;
-        }
-
-        if (value > max)
-        {
-            fprintf(stderr, "%s, value > max.\n", __func__);
-            return 1.f;
-        }
-        
-        return (value - min) / (max - min);
-    }
-
-    // [0; 1] -> [-inf; +inf]
-    float sourceByInterval(const float value, const float min, const float max)
-    {
-	if (max < min)
+	if (min > max)
 	{
 	    fprintf(stderr, "%s, min > max.\n", __func__);
-	    return 0.f;
+	    abort();
 	}
-
-	if (value < 0.f)
-	{
-	    fprintf(stderr, "%s, value < 0.f.\n", __func__);
-	    return 0.f;
-	}
-
-	if (value > 1.f)
-	{
-	    fprintf(stderr, "%s, value > 1.f.\n", __func__);
-	    return 0.f;
-	}
-
-	return  value * (max - min) + min;
+	minSourceValue = min;
+	maxSourceValue = max;
+	normalizedValue = 0;
     }
 
-    NormalizedInput SourceInput::normalize()
+    SmartFloat& SmartFloat::operator=(const SmartFloat &smartFloat)
     {
-        NormalizedInput normalizedInput;
+	if (this != &smartFloat)
+	{
+	    minSourceValue = smartFloat.minSourceValue;
+	    maxSourceValue = smartFloat.maxSourceValue;
+	    normalizedValue = smartFloat.normalizedValue;
+	}
+	return *this;
+    }
 
-        // 30 minutes is max.
-        normalizedInput.time = normalizeByInterval(time, 0, 30 * 60);
+    float SmartFloat::get() const
+    {
+	return minSourceValue + normalizedValue * (maxSourceValue - minSourceValue);
+    }
 
-        normalizedInput.health = normalizeByInterval(health, 0, 100);
-        normalizedInput.armor = normalizeByInterval(health, 0, 100);
+    void SmartFloat::set(const float sourceValue)
+    {
+	if (sourceValue > maxSourceValue)
+	{
+	    fprintf(stderr, "%s, sourceValue > maxSourceValue.\n", __func__);
+	    normalizedValue = 1.f;
+	    return;
+	}
 
-        normalizedInput.viewAngleX = normalizeByInterval(viewAngleX, -89, +89);
-        normalizedInput.viewAngleY = normalizeByInterval(viewAngleY, -180, +180);
+	if (sourceValue < minSourceValue)
+	{
+	    fprintf(stderr, "%s, sourceValue < minSourceValue.\n", __func__);
+	    normalizedValue = 0.f;
+	    return;
+	}
+	
+	normalizedValue = (sourceValue - minSourceValue) / (maxSourceValue - minSourceValue);
+    }
 
-        normalizedInput.speedX = normalizeByInterval(speedX, -250, +250);
-        normalizedInput.speedY = normalizeByInterval(speedY, -250, +250);
-        normalizedInput.speedZ = normalizeByInterval(speedZ, -200, +200);
-
-        normalizedInput.punchAngleX = normalizeByInterval(punchAngleX, -89, +89);
-        normalizedInput.punchAngleY = normalizeByInterval(punchAngleY, -89, +89);
-
+    Input::Input() :
+	time(0, 30 * 60),
+	health(0, 100),
+	armor(0, 100),
+	currentWeapon(0, 32),
+	currentMagazine(0, 1),// TODO
+	currentTotalAmmo(0, 1),// TODO
+	viewAngleX(-89, +89),
+	viewAngleY(-180, +180),
+	speedX(-250, +250),
+	speedY(-200, +200),
+	speedZ(-250, +250),
+	punchAngleX(-89, +89),
+	punchAngleY(-89, +89)
+    {
         for (size_t i = 0; i < sizeof(view) / sizeof(view[0]); ++i)
         {
-            normalizedInput.view[i] = normalizeByInterval(view[i], 0, 1);
+            view[i] = SmartFloat(0, 1);
         }
 
         for (size_t i = 0; i < sizeof(nearestInvisibleEnemyNoises) / sizeof(nearestInvisibleEnemyNoises[0]); ++i)
         {
-            normalizedInput.nearestInvisibleEnemyNoises[i].x = normalizeByInterval(nearestInvisibleEnemyNoises[i].x, 0, 1);
-            normalizedInput.nearestInvisibleEnemyNoises[i].y = normalizeByInterval(nearestInvisibleEnemyNoises[i].y, 0, 1);
-            normalizedInput.nearestInvisibleEnemyNoises[i].z = normalizeByInterval(nearestInvisibleEnemyNoises[i].z, 0, 1);
-            normalizedInput.nearestInvisibleEnemyNoises[i].t = normalizeByInterval(nearestInvisibleEnemyNoises[i].t, 0, 1);
+            nearestInvisibleEnemyNoises[i].x = SmartFloat(-89, +89);
+            nearestInvisibleEnemyNoises[i].y = SmartFloat(-180, +180);
+            nearestInvisibleEnemyNoises[i].f = SmartFloat(0, 1);
         }
 
         for (size_t i = 0; i < sizeof(nearestVisibleEnemies) / sizeof(nearestVisibleEnemies[0]); ++i)
         {
-            normalizedInput.nearestVisibleEnemies[i].x = normalizeByInterval(nearestVisibleEnemies[i].x, 0, 1);
-            normalizedInput.nearestVisibleEnemies[i].y = normalizeByInterval(nearestVisibleEnemies[i].y, 0, 1);
-            normalizedInput.nearestVisibleEnemies[i].z = normalizeByInterval(nearestVisibleEnemies[i].z, 0, 1);
+            nearestVisibleEnemies[i].x = SmartFloat(-89, +89);
+            nearestVisibleEnemies[i].y = SmartFloat(-180, +180);
+            nearestVisibleEnemies[i].f = SmartFloat(0, 1);
         }
 
         for (size_t i = 0; i < sizeof(nearestFriends) / sizeof(nearestFriends[0]); ++i)
         {
-            normalizedInput.nearestFriends[i].x = normalizeByInterval(nearestFriends[i].x, 0, 1);
-            normalizedInput.nearestFriends[i].y = normalizeByInterval(nearestFriends[i].y, 0, 1);
-            normalizedInput.nearestFriends[i].z = normalizeByInterval(nearestFriends[i].z, 0, 1);
+            nearestFriends[i].x = SmartFloat(-89, +89);
+            nearestFriends[i].y = SmartFloat(-180, +180);
+            nearestFriends[i].f = SmartFloat(0, 1);
         }
-
-        return normalizedInput;
     }
 
-    SourceOutput NormalizedOutput::source()
+    Output::Output() :
+	fire(0, 1),
+	reload(0, 1),
+	shift(0, 1),
+	alt(0, 1),
+	changeViewAngleX(-89, +89),
+	changeViewAngleY(-180, +180),
+	changeSpeedX(-250, +250),
+	changeSpeedY(-200, +200),
+	changeSpeedZ(-250, +250)
     {
-        SourceOutput sourceOutput;
-
-        sourceOutput.fire = sourceByInterval(fire, 0, 1);
-        sourceOutput.reload = sourceByInterval(reload, 0, 1);
-        sourceOutput.shift = sourceByInterval(shift, 0, 1);
-        sourceOutput.alt = sourceByInterval(alt, 0, 1);
-
-        sourceOutput.changeViewAngleX = sourceByInterval(changeViewAngleX, 0, 1);
-        sourceOutput.changeViewAngleY = sourceByInterval(changeViewAngleY, 0, 1);
-
-        sourceOutput.changeSpeedX = sourceByInterval(changeSpeedX, 0, 1);
-        sourceOutput.changeSpeedY = sourceByInterval(changeSpeedY, 0, 1);
-        sourceOutput.changeSpeedZ = sourceByInterval(changeSpeedZ, 0, 1);
-
-        return sourceOutput;
     }
 
     Brain::Brain()
     {
-	struct settings settings;
-	
 	settings.input_count = 50;
 	settings.output_count = 50;
 	settings.frame_count = 30;
@@ -139,22 +123,26 @@ namespace ai
 	}
     }
 
-    SourceInput& Brain::getSourceInput()
+    Brain::~Brain()
     {
-	return sourceInput;
+	brain_delete(brain);
+    }
+
+    Input& Brain::getInput()
+    {
+	return input;
     }
 
     void Brain::tick()
     {
 	
 	brain_tick(brain, 0);
+	
     }
 
-    const SourceOutput& Brain::getSourceOutput()
+    const Output& Brain::getOutput()
     {
-	
-	
-	return sourceOutput;
+	return output;
     }
 
 }

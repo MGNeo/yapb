@@ -5,95 +5,83 @@
 
 namespace ai
 {
-    class XYZT
+    class SmartFloat
     {
-        public:
-        
-        float x;
-        float y;
-        float z;
-        float t;
+	public:
+	SmartFloat(const float min = 0.f, const float max = 1.f);
+	
+	SmartFloat &operator=(const SmartFloat &smartFloat);
+	// Get source value.
+	float get() const;
+
+	// Set source valuel.
+	void set(const float value);
+
+	private:
+	float minSourceValue;
+	float maxSourceValue;
+	float normalizedValue;
     };
 
-    class XYZ
+    struct XYF
     {
-        public:
-
-        float x;
-        float y;
-        float z;
+        SmartFloat x;
+        SmartFloat y;
+        SmartFloat f;
     };
 
     class Input
     {
         public:
-        
-        float time;
 
-        float health;
-        float armor;
+	Input();
 
-        float currentWeapon;
-        float currentMagazine;
-        float currentTotalAmmo;
+        SmartFloat time;
 
-        float viewAngleX;
-        float viewAngleY;
+        SmartFloat health;
+        SmartFloat armor;
 
-        float speedX;
-        float speedY;
-        float speedZ;
+        SmartFloat currentWeapon;
+        SmartFloat currentMagazine;
+        SmartFloat currentTotalAmmo;
+	SmartFloat viewAngleX;
+        SmartFloat viewAngleY;
 
-        float punchAngleX;
-        float punchAngleY;
+        SmartFloat speedX;
+        SmartFloat speedY;
+        SmartFloat speedZ;
 
-        float view[16];
-        XYZT nearestInvisibleEnemyNoises[4];
-        XYZ nearestVisibleEnemies[4];
-        XYZ nearestFriends[4];
-    };
+        SmartFloat punchAngleX;
+        SmartFloat punchAngleY;
 
-    class NormalizedInput : public Input
-    {
-    };
+        SmartFloat view[16];
 
-    class SourceInput : public Input
-    {
-        public:
-        // Normalize all values to [0; +1].
-        NormalizedInput normalize();
+        XYF nearestInvisibleEnemyNoises[4];
+        XYF nearestVisibleEnemies[4];
+        XYF nearestFriends[4];
     };
 
     class Output
     {
         public:
 
-        float fire;
-        float reload;
-        float shift;
-        float alt;
+	Output();
+
+        SmartFloat fire;
+        SmartFloat reload;
+        SmartFloat shift;
+        SmartFloat alt;
         
         // TODO: What about weapon selection?
 
-        float changeViewAngleX;
-        float changeViewAngleY;
+        SmartFloat changeViewAngleX;
+        SmartFloat changeViewAngleY;
 
-        float changeSpeedX;
-        float changeSpeedY;
-        float changeSpeedZ;
+        SmartFloat changeSpeedX;
+        SmartFloat changeSpeedY;
+        SmartFloat changeSpeedZ;
 
         // ...
-    };
-    
-    class SourceOutput : public Output
-    {
-        public:
-    };
-    
-    class NormalizedOutput : public Output
-    {
-	public:
-	SourceOutput source();
     };
 
     class Brain
@@ -101,18 +89,20 @@ namespace ai
         public:
 
         Brain();
+	~Brain();
 
-        SourceInput& getSourceInput();
+        Input& getInput();
 
         void tick() noexcept;
 
-        const SourceOutput& getSourceOutput();
+        const Output& getOutput();
 
         private:
 
-        SourceInput sourceInput;
-        SourceOutput sourceOutput;
+        Input input;
+        Output output;
 
+	struct settings settings;
 	struct brain* brain;
     };
     
