@@ -42,6 +42,7 @@ set(YAPB_SRC
 )
 
 add_library(yapb MODULE ${YAPB_SRC})
+target_link_libraries(yapb PRIVATE agi)
 
 find_package(Git QUIET)
 

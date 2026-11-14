@@ -1,6 +1,8 @@
 #ifndef __AI_H__
 #define __AI_H__
 
+#include "brain.h"
+
 namespace ai
 {
     class XYZT
@@ -110,6 +112,8 @@ namespace ai
 
         SourceInput sourceInput;
         SourceOutput sourceOutput;
+
+	struct brain* brain;
     };
     
     

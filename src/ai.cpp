@@ -122,7 +122,21 @@ namespace ai
 
     Brain::Brain()
     {
-	// ...
+	struct settings settings;
+	
+	settings.input_count = 50;
+	settings.output_count = 50;
+	settings.frame_count = 30;
+	settings.scale_stage_count = 3;
+	settings.hidden_actor_layer_size = 256;
+	settings.hidden_critic_layer_size = 64;
+
+	brain = brain_new(settings);
+
+	if (brain == NULL)
+	{
+	    fprintf(stderr, "%s, brain == NULL.\n", __func__);
+	}
     }
 
     SourceInput& Brain::getSourceInput()
@@ -132,11 +146,14 @@ namespace ai
 
     void Brain::tick()
     {
-
+	
+	brain_tick(brain, 0);
     }
 
     const SourceOutput& Brain::getSourceOutput()
     {
+	
+	
 	return sourceOutput;
     }
 
