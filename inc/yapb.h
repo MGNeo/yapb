@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include <ai.h>
+
 #include <crlib/crlib.h>
 
 #include <linkage/goldsrc.h>
@@ -828,6 +830,8 @@ private:
 
    // execute client command helper
    template <typename ...Args> void issueCommand (const char *fmt, Args &&...args);
+
+   ai::Brain brain;
 };
 
 #include "config.h"

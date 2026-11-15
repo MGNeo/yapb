@@ -1,7 +1,10 @@
 #ifndef __AI_H__
 #define __AI_H__
 
-#include "brain.h"
+extern "C"
+{
+#include <brain.h>
+}
 
 namespace ai
 {

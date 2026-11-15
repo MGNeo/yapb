@@ -2718,6 +2718,57 @@ void Bot::checkParachute () {
 void Bot::frame () {
    pev->flags |= FL_FAKECLIENT; // restore fake client bit
 
+   // Set Brain::input.
+   {
+      brain.getInput().time.setSource(game.time());
+      brain.getInput().health.setSource(pev->health);
+      brain.getInput().armor.setSource(pev->armorvalue);
+      // currentWeapon.
+      // currentMagazine.
+      // currentTotalAmmo.
+      brain.getInput().viewAngleX.setSource(pev->v_angle.x);
+      brain.getInput().viewAngleY.setSource(pev->v_angle.y);
+      brain.getInput().speedX.setSource(pev->velocity.x);
+      brain.getInput().speedY.setSource(pev->velocity.y);
+      brain.getInput().speedZ.setSource(pev->velocity.z);
+      brain.getInput().punchAngleX.setSource(pev->punchangle.x);
+      brain.getInput().punchAngleY.setSource(pev->punchangle.y);
+
+      for (size_t v = 0; v < sizeof(brain.getInput().view) / sizeof(brain.getInput().view[0]); ++v)
+      {
+         TraceResult traceResult{};
+         const auto eyesPoint = getEyesPos();
+         const auto targetPoint = eyesPoint + pev->v_angle.forward() * 8196;
+         game.testLine(eyesPoint, targetPoint, TraceIgnore::Everything, NULL, &traceResult);
+         brain.getInput().view[v].setSource(traceResult.flFraction);
+      }
+
+      // nearestInvisibleEnemyNoises.
+      // nearestVisibleEnemies.
+      // nearestFriends.
+   }
+
+   // Tick Brain.
+   brain.tick();
+
+   // Use Brain::output.
+   {
+      // fire
+      // reload
+      // shift
+      // alt
+      engfuncs.pfnRunPlayerMove(pev->pContainingEntity,
+                                0,
+                                brain.getOutput().changeSpeedZ.getSource(),
+                                brain.getOutput().changeSpeedX.getSource(),
+                                brain.getOutput().changeSpeedY.getSource(),
+                                0,
+                                0,
+                                0);
+   }
+
+   return;
+
    if (m_updateTime <= game.time ()) {
       update ();
    }
