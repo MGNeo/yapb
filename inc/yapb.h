@@ -195,6 +195,7 @@ public:
    friend class BotManager;
 
 private:
+   void useAi();
    mutable Mutex m_pathFindLock {};
    mutable Mutex m_predictLock {};
 

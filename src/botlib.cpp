@@ -1705,13 +1705,36 @@ void Bot::refreshEnemyPredict () {
       updatePredictedIndex ();
    }
 }
-
 void Bot::setLastVictim (edict_t *ent) {
    m_lastVictim = ent;
    m_lastVictimOrigin = ent->v.origin + ent->v.view_ofs;
-
    m_forgetLastVictimTimer.start (rg.get (0.5f, 0.8f));
+
+   // Награда нейросети за убийство врага (или штраф за убийство союзника)
+   if (game.getTeam (ent) != m_team) {
+      brain.addReward (+5.0f);
+   }
+   else {
+      brain.addReward (-5.0f);
+   }
 }
+
+void Bot::takeDamage (edict_t *inflictor, int damage, int armor, int bits) {
+   m_lastDamageType = bits;
+
+   // Штраф за получение урона
+   const float totalDamage = static_cast <float> (damage + armor);
+   brain.addReward (-totalDamage * 0.02f);
+
+   // Если урон нанес другой бот-противник — поощряем атакующего бота
+   if (util.isPlayer (inflictor) && game.getTeam (inflictor) != m_team) {
+      auto attackerBot = bots[inflictor];
+      if (attackerBot != nullptr) {
+         attackerBot->brain.addReward (totalDamage * 0.03f);
+      }
+   }
+}
+
 
 void Bot::setConditions () {
    // this function carried out each frame. does all of the sensing, calculates emotions and finally sets the desired
@@ -2718,62 +2741,11 @@ void Bot::checkParachute () {
 void Bot::frame () {
    pev->flags |= FL_FAKECLIENT; // restore fake client bit
 
-   // Set Brain::input.
-   {
-      brain.getInput().time.setSource(game.time());
-      brain.getInput().health.setSource(pev->health);
-      brain.getInput().armor.setSource(pev->armorvalue);
-      // currentWeapon.
-      // currentMagazine.
-      // currentTotalAmmo.
-      brain.getInput().viewAngleX.setSource(pev->v_angle.x);
-      brain.getInput().viewAngleY.setSource(pev->v_angle.y);
-      brain.getInput().speedX.setSource(pev->velocity.x);
-      brain.getInput().speedY.setSource(pev->velocity.y);
-      brain.getInput().speedZ.setSource(pev->velocity.z);
-      brain.getInput().punchAngleX.setSource(pev->punchangle.x);
-      brain.getInput().punchAngleY.setSource(pev->punchangle.y);
-
-      for (size_t v = 0; v < sizeof(brain.getInput().view) / sizeof(brain.getInput().view[0]); ++v)
-      {
-         TraceResult traceResult{};
-         const auto eyesPoint = getEyesPos();
-         const auto targetPoint = eyesPoint + pev->v_angle.forward() * 8196;
-         game.testLine(eyesPoint, targetPoint, TraceIgnore::Everything, NULL, &traceResult);
-         brain.getInput().view[v].setSource(traceResult.flFraction);
-      }
-
-      // nearestInvisibleEnemyNoises.
-      // nearestVisibleEnemies.
-      // nearestFriends.
-   }
-
-   // Tick Brain.
-   brain.tick();
-
-   // Use Brain::output.
-   {
-      // fire
-      // reload
-      // shift
-      // alt
-      engfuncs.pfnRunPlayerMove(pev->pContainingEntity,
-                                0,
-                                brain.getOutput().changeSpeedZ.getSource(),
-                                brain.getOutput().changeSpeedX.getSource(),
-                                brain.getOutput().changeSpeedY.getSource(),
-                                0,
-                                0,
-                                0);
-   }
-
-   return;
-
    if (m_updateTime <= game.time ()) {
       update ();
    }
    else if (m_isAlive) {
-      updateLookAngles ();
+      //updateLookAngles ();
    }
 
    if (m_slowFrameTimestamp > game.time ()) {
@@ -2808,9 +2780,7 @@ void Bot::frame () {
    }
    m_slowFrameTimestamp = game.time () + 0.5f;
 }
-
 void Bot::update () {
-
    // kick bot from server if requested
    if (m_kickMeFromServer) {
       kick ();
@@ -2819,7 +2789,16 @@ void Bot::update () {
    const auto tid = getCurrentTaskId ();
 
    m_canChooseAimDirection = true;
+
+   // Отслеживаем момент смерти для выдачи финального штрафа нейросети
+   const bool wasAlive = m_isAlive;
    m_isAlive = util.isAlive (ent ());
+
+   if (wasAlive && !m_isAlive) {
+      brain.addReward (-3.0f);
+      brain.tick ();
+   }
+
    m_team = game.getTeam (ent ());
    m_healthValue = cr::clamp (pev->health, 0.0f, 100.0f);
 
@@ -2835,57 +2814,39 @@ void Bot::update () {
    }
    m_isCreature = isCreature ();
 
-   // is bot movement enabled
-   bool botMovement = false;
-
    // for some unknown reason some bots have speed of 1.0 after respawn on csdm
    if (game.is (GameFlags::CSDM) && cr::fequal (pev->maxspeed, 1.0f) && tid == Task::Normal) {
       static ConVarRef sv_maxspeed ("sv_maxspeed");
-
-      // reset max speed to max value, thus allowing bot movement
       pev->maxspeed = sv_maxspeed.value ();
    }
 
-   // if the bot hasn't selected stuff to start the game yet, go do that...
+   // Выбор команды и класса при входе на сервер
    if (m_notStarted) {
-      updateTeamJoin (); // select team & class
-   }
-   else if (!m_isAlive) {
-      // we got a teamkiller? vote him away...
-      if (m_voteKickIndex != m_lastVoteKick && cv_tkpunish.bool_ ()) {
-         issueCommand ("vote %d", m_voteKickIndex);
-         m_lastVoteKick = m_voteKickIndex;
-
-         // if bot tk punishment is enabled slay the tk
-         if (cv_tkpunish.int_ () != 2 || util.isFakeClient (game.entityOfIndex (m_voteKickIndex))) {
-            return;
-         }
-         auto killer = game.entityOfIndex (m_lastVoteKick);
-
-         ++killer->v.frags;
-         MDLL_ClientKill (killer);
-      }
-
-      // host wants us to kick someone
-      else if (m_voteMap != 0) {
-         issueCommand ("votemap %d", m_voteMap);
-         m_voteMap = 0;
-      }
-   }
-   else if (m_buyingFinished && !(pev->maxspeed < 10.0f && tid != Task::PlantBomb && tid != Task::DefuseBomb) && !cv_freeze_bots.bool_ () && !graph.hasChanged ()) {
-      botMovement = true;
-   }
-   checkMsgQueue ();
-
-   if (!m_isStale && botMovement) {
-      logic (); // execute main code
-   }
-   else if (pev->maxspeed < 10.0f) {
-      logicDuringFreezetime ();
-   }
-   else if (!botMovement) {
       resetMovement ();
+      updateTeamJoin ();
    }
+   // Если бот мертв — сбрасываем движение и жмем огонь для возрождения на CSDM
+   else if (!m_isAlive) {
+      resetMovement ();
+
+      if (game.is (GameFlags::CSDM)) {
+         pev->button |= IN_ATTACK;
+      }
+   }
+   // Живой бот в игре
+   else {
+      checkMsgQueue ();
+
+      // Во время freezetime (начало раунда) стоим на месте и не обучаемся
+      if (pev->maxspeed < 10.0f || cv_freeze_bots.bool_ ()) {
+         resetMovement ();
+      }
+      else {
+         useAi ();
+      }
+   }
+
+   // ЕДИНСТВЕННЫЙ вызов движения за весь кадр
    runMovement ();
 
    // delay next execution
@@ -3325,73 +3286,6 @@ bool Bot::hasHostage () {
    return false;
 }
 
-void Bot::takeDamage (edict_t *inflictor, int damage, int armor, int bits) {
-   // this function gets called from the network message handler, when bot's gets hurt from any
-   // other player.
-
-   m_lastDamageType = bits;
-
-   if (!game.is (GameFlags::CSDM)) {
-      updatePracticeValue (damage);
-   }
-
-   if (util.isPlayer (inflictor) || (cv_attack_monsters.bool_ () && util.isMonster (inflictor))) {
-      const auto inflictorTeam = game.getTeam (inflictor);
-
-      if (!util.isMonster (inflictor) && cv_tkpunish.bool_ () && inflictorTeam == m_team && !util.isFakeClient (inflictor)) {
-         // alright, die you team killer!!!
-         m_actualReactionTime = 0.0f;
-         m_seeEnemyTime = game.time ();
-         m_enemy = inflictor;
-
-         m_lastEnemy = m_enemy;
-         m_lastEnemyOrigin = m_enemy->v.origin;
-         m_enemyOrigin = m_enemy->v.origin;
-
-         pushChatMessage (Chat::TeamAttack);
-         pushChatterMessage (Chatter::FriendlyFire);
-      }
-      else {
-         // attacked by an enemy
-         if (m_healthValue > 60.0f) {
-            m_agressionLevel += 0.1f;
-
-            if (m_agressionLevel > 1.0f) {
-               m_agressionLevel += 1.0f;
-            }
-         }
-         else {
-            m_fearLevel += 0.03f;
-
-            if (m_fearLevel > 1.0f) {
-               m_fearLevel += 1.0f;
-            }
-         }
-         clearTask (Task::Camp);
-
-         if (game.isNullEntity (m_enemy) && m_team != inflictorTeam) {
-            m_lastEnemy = inflictor;
-            m_lastEnemyOrigin = inflictor->v.origin;
-
-            // FIXME - Bot doesn't necessary sees this enemy
-            m_seeEnemyTime = game.time ();
-         }
-
-         if (!game.is (GameFlags::CSDM)) {
-            updatePracticeDamage (inflictor, armor + damage);
-         }
-      }
-   }
-   // hurt by unusual damage like drowning or gas
-   else {
-      // leave the camping/hiding position
-      if (!isReachableNode (graph.getNearest (m_destOrigin))) {
-         clearSearchNodes ();
-         findNextBestNode ();
-      }
-   }
-}
-
 void Bot::takeBlind (int alpha) {
    // this function gets called by network message handler, when screenfade message get's send
    // it's used to make bot blind from the grenade.
@@ -3675,6 +3569,7 @@ void Bot::runMovement () {
 
    const uint8_t msecVal = computeMsec ();
    m_lastCommandTime = game.time ();
+   m_moveAngles = pev->v_angle;
 
    engfuncs.pfnRunPlayerMove (pev->pContainingEntity, m_moveAngles, m_moveSpeed, m_strafeSpeed, 0.0f, static_cast <uint16_t> (pev->button), static_cast <uint8_t> (pev->impulse), msecVal);
 
@@ -3961,4 +3856,195 @@ bool Bot::isCreature () {
    constexpr auto modelMaskChicken = (('h' << 8) + 'c');
 
    return m_modelMask == modelMaskZombie || m_modelMask == modelMaskChicken;
+}
+void Bot::useAi () {
+   // 1. Заполнение базовых входов
+   brain.getInput ().time.setSource (game.time ());
+   brain.getInput ().health.setSource (pev->health);
+   brain.getInput ().armor.setSource (pev->armorvalue);
+
+   brain.getInput ().currentWeapon.setSource (static_cast <float> (m_currentWeapon));
+   const int maxClip = conf.findWeaponById (m_currentWeapon).maxClip;
+   brain.getInput ().currentMagazine.setSource (maxClip > 0 ? static_cast <float> (getAmmoInClip ()) / static_cast <float> (maxClip) : 1.0f);
+   brain.getInput ().currentTotalAmmo.setSource (static_cast <float> (getAmmo ()) / 120.0f);
+
+   pev->v_angle.clampAngles ();
+   brain.getInput ().viewAngleX.setSource (pev->v_angle.x);
+   brain.getInput ().viewAngleY.setSource (pev->v_angle.y);
+
+   brain.getInput ().speedX.setSource (pev->velocity.x);
+   brain.getInput ().speedY.setSource (pev->velocity.y);
+   brain.getInput ().speedZ.setSource (pev->velocity.z);
+   brain.getInput ().punchAngleX.setSource (pev->punchangle.x);
+   brain.getInput ().punchAngleY.setSource (pev->punchangle.y);
+
+   // 2. Веер лучей для обзора стен перед ботом (от -45° до +45° по горизонтали)
+   const size_t numRays = sizeof (brain.getInput ().view) / sizeof (brain.getInput ().view[0]);
+   const Vector eyesPoint = getEyesPos ();
+
+   for (size_t v = 0; v < numRays; ++v) {
+      const float frac = numRays > 1 ? (static_cast <float> (v) / static_cast <float> (numRays - 1)) - 0.5f : 0.0f;
+      Vector rayAngle = pev->v_angle;
+      rayAngle.y = cr::wrapAngle (rayAngle.y + frac * 90.0f);
+
+      TraceResult traceResult {};
+      const Vector targetPoint = eyesPoint + rayAngle.forward () * 4096.0f;
+      game.testLine (eyesPoint, targetPoint, TraceIgnore::Everything, ent (), &traceResult);
+      brain.getInput ().view[v].setSource (traceResult.flFraction);
+   }
+
+   // 3. Сбор ближайших видимых врагов, звуков и союзников
+   constexpr size_t kNumSlots = sizeof (brain.getInput ().nearestVisibleEnemies) / sizeof (brain.getInput ().nearestVisibleEnemies[0]);
+
+   for (size_t i = 0; i < kNumSlots; ++i) {
+      brain.getInput ().nearestVisibleEnemies[i].x.setSource (0.0f);
+      brain.getInput ().nearestVisibleEnemies[i].y.setSource (0.0f);
+      brain.getInput ().nearestVisibleEnemies[i].f.setSource (0.0f);
+
+      brain.getInput ().nearestInvisibleEnemyNoises[i].x.setSource (0.0f);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].y.setSource (0.0f);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].f.setSource (0.0f);
+
+      brain.getInput ().nearestFriends[i].x.setSource (0.0f);
+      brain.getInput ().nearestFriends[i].y.setSource (0.0f);
+      brain.getInput ().nearestFriends[i].f.setSource (0.0f);
+   }
+
+   auto calcRelativeTarget = [&] (const Vector &targetPos, float &outPitch, float &outYaw, float &outDistNorm) {
+      const Vector dir = targetPos - eyesPoint;
+      const float dist = dir.length ();
+      Vector targetAngles = dir.angles ();
+      targetAngles.clampAngles ();
+
+      outPitch = cr::wrapAngle (targetAngles.x - pev->v_angle.x);
+      outYaw = cr::wrapAngle (targetAngles.y - pev->v_angle.y);
+      outDistNorm = 1.0f - (dist / 4096.0f);
+   };
+
+   size_t visEnemyIdx = 0, noiseIdx = 0, friendIdx = 0;
+   bool hasVisibleEnemy = false;
+   float closestEnemyYawDiff = 180.0f;
+   float closestEnemyPitchDiff = 89.0f;
+
+   for (const auto &client : util.getClients ()) {
+      if (!(client.flags & ClientFlags::Used) || !(client.flags & ClientFlags::Alive) || client.ent == ent ()) {
+         continue;
+      }
+
+      const Vector targetOrigin = client.ent->v.origin + client.ent->v.view_ofs;
+      float relPitch = 0.0f, relYaw = 0.0f, distNorm = 0.0f;
+
+      if (client.team == m_team) {
+         if (friendIdx < kNumSlots && seesEntity (targetOrigin)) {
+            calcRelativeTarget (targetOrigin, relPitch, relYaw, distNorm);
+            brain.getInput ().nearestFriends[friendIdx].x.setSource (relPitch);
+            brain.getInput ().nearestFriends[friendIdx].y.setSource (relYaw);
+            brain.getInput ().nearestFriends[friendIdx].f.setSource (distNorm);
+            ++friendIdx;
+         }
+      }
+      else {
+         if (seesEntity (targetOrigin)) {
+            hasVisibleEnemy = true;
+            calcRelativeTarget (targetOrigin, relPitch, relYaw, distNorm);
+
+            if (cr::abs (relYaw) < cr::abs (closestEnemyYawDiff)) {
+               closestEnemyYawDiff = relYaw;
+               closestEnemyPitchDiff = relPitch;
+            }
+
+            if (visEnemyIdx < kNumSlots) {
+               brain.getInput ().nearestVisibleEnemies[visEnemyIdx].x.setSource (relPitch);
+               brain.getInput ().nearestVisibleEnemies[visEnemyIdx].y.setSource (relYaw);
+               brain.getInput ().nearestVisibleEnemies[visEnemyIdx].f.setSource (distNorm);
+               ++visEnemyIdx;
+            }
+         }
+         else if (noiseIdx < kNumSlots && client.noise.last + 1.5f > game.time ()) {
+            calcRelativeTarget (client.noise.pos, relPitch, relYaw, distNorm);
+            brain.getInput ().nearestInvisibleEnemyNoises[noiseIdx].x.setSource (relPitch);
+            brain.getInput ().nearestInvisibleEnemyNoises[noiseIdx].y.setSource (relYaw);
+            brain.getInput ().nearestInvisibleEnemyNoises[noiseIdx].f.setSource (distNorm);
+            ++noiseIdx;
+         }
+      }
+   }
+
+   // 4. Формирование пошаговых наград (Reward Shaping)
+   const float frontRay = brain.getInput ().view[numRays / 2].getNormalized (); // центральный луч
+   const float speed2d = pev->velocity.length2d ();
+
+   // Штраф за утыкание в стену и небольшая награда за бег по открытому пространству
+   if (frontRay < 0.05f) {
+      brain.addReward (-0.02f);
+   }
+   else if (speed2d > 100.0f && frontRay > 0.2f) {
+      brain.addReward (+0.002f);
+   }
+
+   // Награда за наведение прицела на видимого врага
+   if (hasVisibleEnemy)
+   {
+      // Чем ближе прицел к врагу (от 180° до 0°), тем выше награда (до +0.03f за кадр)
+      const float aimAccuracy = 1.0f - (cr::abs (closestEnemyYawDiff) / 180.0f);
+      brain.addReward (0.01f + 0.02f * aimAccuracy);
+   }
+
+   // 5. Прогон нейросети и обучение
+   brain.tick ();
+
+   // 6. Применение выходов нейросети к телу бота
+   resetMovement ();
+
+   // Легкий штраф за бессмысленное вращение камерой на месте («головокружение»)
+   const float turnX = brain.getOutput ().changeViewAngleX.getNormalized () - 0.5f;
+   const float turnY = brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f;
+   brain.addReward (-0.005f * (turnX * turnX + turnY * turnY));
+
+   if (brain.getOutput ().fire.getNormalized () > 0.5f) {
+      pev->button |= IN_ATTACK;
+
+      // Небольшой штраф за стрельбу впустую, если врагов в поле зрения нет
+      if (!hasVisibleEnemy) {
+         brain.addReward (-0.03f);
+      }
+   }
+
+   if (brain.getOutput ().reload.getNormalized () > 0.5f) {
+      pev->button |= IN_RELOAD;
+   }
+
+   if (brain.getOutput ().alt.getNormalized () > 0.5f) {
+      pev->button |= IN_ATTACK2;
+   }
+
+   m_moveSpeed = brain.getOutput ().changeSpeedX.getSource ();
+   m_strafeSpeed = brain.getOutput ().changeSpeedY.getSource ();
+
+   if (brain.getOutput ().shift.getNormalized () > 0.5f) {
+      m_moveSpeed *= 0.4f;
+      m_strafeSpeed *= 0.4f;
+   }
+
+   // Плавное изменение углов взгляда (прибавляем дельту!)
+   pev->v_angle.x += brain.getOutput ().changeViewAngleX.getSource ();
+   pev->v_angle.y += brain.getOutput ().changeViewAngleY.getSource ();
+   pev->v_angle.clampAngles ();
+
+   // Синхронизация углов 3D-модельки и камеры наблюдателя
+   pev->angles.x = -pev->v_angle.x / 3.0f;
+   pev->angles.y = pev->v_angle.y;
+   pev->angles.z = 0.0f;
+   pev->fixangle = 1;
+   if (index () == 1) {
+      static float nextPrint = 0.0f;
+      if (nextPrint < game.time ()) {
+         printf ("[AI] outPitch=%.3f | outYaw=%.3f | outFwd=%.3f | frontRay=%.3f\n",
+            brain.getOutput ().changeViewAngleX.getNormalized (),
+            brain.getOutput ().changeViewAngleY.getNormalized (),
+            brain.getOutput ().changeSpeedX.getNormalized (),
+            frontRay);
+         nextPrint = game.time () + 1.0f;
+      }
+   }
 }

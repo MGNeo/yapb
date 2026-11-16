@@ -88,28 +88,27 @@ namespace ai
         // ...
     };
 
-    class Brain
-    {
-        public:
+// Внутри class Brain в вашем ai.h:
+class Brain {
+private:
+   struct settings settings;
+   struct brain *brain = nullptr;
 
-        Brain();
-	~Brain();
+   Input input {};
+   Output output {};
 
-        Input& getInput();
+   float stepReward = 0.0f; // Накопленная награда за шаг
 
-        void tick() noexcept;
+public:
+   Brain ();
+   ~Brain ();
 
-        const Output& getOutput();
+   Input &getInput ();
+   const Output &getOutput ();
 
-        private:
-
-        Input input;
-        Output output;
-
-	struct settings settings;
-	struct brain* brain;
-    };
-    
+   void addReward (float reward) { stepReward += reward; }
+   void tick ();
+};
     
 }
 
