@@ -123,11 +123,11 @@ Brain::Brain()
     settings.hidden_actor_layer_size = 64;
     settings.hidden_critic_layer_size = 32;
     settings.sigma_k = 0.95;
-    settings.max_adaptation_step = 0.01;
+    settings.max_adaptation_step = 0.001;
     settings.min_weight_value = -1000;
     settings.max_weight_value = +1000;
-    settings.min_init_weight_value = -0.1;
-    settings.max_init_weight_value = +0.1;
+    settings.min_init_weight_value = -0.05;
+    settings.max_init_weight_value = +0.05;
 
     char filename[128] {0};
     id = global_id;
