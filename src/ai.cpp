@@ -103,9 +103,9 @@ Input::Input()
 
 Output::Output()
     : fire(0, 1), reload(0, 1), shift(0, 1), alt(0, 1),
-      changeViewAngleX(-15.0f, +15.0f), // Макс. поворот по вертикали за 1 шаг
-      changeViewAngleY(-25.0f,
-                       +25.0f),       // Макс. поворот по горизонтали за 1 шаг
+      changeViewAngleX(-5.0f, +5.0f), // Макс. поворот по вертикали за 1 шаг (плавно, без юлы)
+      changeViewAngleY(-12.0f,
+                       +12.0f),      // Макс. поворот по горизонтали за 1 шаг (плавно)
       changeSpeedX(-250.0f, +250.0f), // Вперед / Назад (forwardmove)
       changeSpeedY(-250.0f, +250.0f), // Влево / Вправо (sidemove)
       changeSpeedZ(-200.0f, +200.0f)  // Вверх / Вниз (upmove)
@@ -118,16 +118,14 @@ Brain::Brain()
 {
     settings.input_count = 65;
     settings.output_count = 9;
-    settings.frame_count = 30;
-    settings.scale_stage_count = 2;
-    settings.hidden_actor_layer_size = 64;
-    settings.hidden_critic_layer_size = 32;
-    settings.sigma_k = 0.95;
-    settings.max_adaptation_step = 0.001;
-    settings.min_weight_value = -1000;
-    settings.max_weight_value = +1000;
-    settings.min_init_weight_value = -0.05;
-    settings.max_init_weight_value = +0.05;
+    // Fully-connected recurrent network sizes (input + hidden + output).
+    // Actor: 65 sensors + 54 hidden + 9 motor = 128 neurons.
+    settings.actor_neuron_count = 128;
+    // Critic: 65 sensors + 30 hidden + 1 value neuron = 96 neurons.
+    settings.critic_neuron_count = 96;
+    // Multi-scale activity traces: windows ~1, 2, 4, 8 ticks.
+    settings.trace_count = 4;
+    settings.max_adaptation_step = 0.002f;
 
     char filename[128] {0};
     id = global_id;

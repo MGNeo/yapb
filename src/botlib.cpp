@@ -3115,6 +3115,7 @@ void Bot::spawned () {
       newRound ();
       clearTasks ();
    }
+   m_aiLastRewardOrigin = pev->origin; // стартовая точка для AI-награды за перемещение
 }
 
 void Bot::showDebugOverlay () {
@@ -3878,22 +3879,55 @@ void Bot::useAi () {
    brain.getInput ().punchAngleX.setSource (pev->punchangle.x);
    brain.getInput ().punchAngleY.setSource (pev->punchangle.y);
 
-   // 2. Веер лучей для обзора стен перед ботом (от -45° до +45° по горизонтали)
+   // 2. Видимость: 4 "рамки" по 4 точки в углах (всего 16 точек).
+   //    Стандартная видимость +/-45° вверх/вниз/лево/право.
+   //    Рамка 0 (внешняя): полуразмер 45°, без поворота — точки в самых углах поля зрения.
+   //    Каждая следующая рамка: полуразмер вдвое меньше, поворот +45° относительно предыдущей.
+   //    За счёт поворота квадраты чередуются "ромб/квадрат", и точки сгущаются к центру зрения.
+   //    Координаты луча — это (pitch, yaw) относительно текущего взгляда бота (v_angle).
    const size_t numRays = sizeof (brain.getInput ().view) / sizeof (brain.getInput ().view[0]);
    const Vector eyesPoint = getEyesPos ();
+   const float baseYaw = pev->v_angle.y;
+   const float basePitch = pev->v_angle.x;
 
-   for (size_t v = 0; v < numRays; ++v) {
-      const float frac = numRays > 1 ? (static_cast <float> (v) / static_cast <float> (numRays - 1)) - 0.5f : 0.0f;
-      Vector rayAngle = pev->v_angle;
-      rayAngle.y = cr::wrapAngle (rayAngle.y + frac * 90.0f);
+   constexpr float kDeg2Rad = 3.14159265358979323846f / 180.0f;
 
-      TraceResult traceResult {};
-      const Vector targetPoint = eyesPoint + rayAngle.forward () * 4096.0f;
-      game.testLine (eyesPoint, targetPoint, TraceIgnore::Everything, ent (), &traceResult);
-      brain.getInput ().view[v].setSource (traceResult.flFraction);
+   size_t v = 0;
+   for (size_t frame = 0; frame < 4; ++frame) {
+      // Полуразмер рамки: 45, 22.5, 11.25, 5.625 градусов.
+      const float half = 45.0f / static_cast <float> (1u << frame);
+      // Поворот рамки: 0, 45, 90, 135 градусов. Поворот на 90° дает тот же квадрат,
+      // но за счёт чередования 0/45/90/135 ромбы и квадраты чередуются -> "звезда".
+      const float rotDeg = static_cast <float> (frame) * 45.0f;
+      const float rotSin = cr::sinf (rotDeg * kDeg2Rad);
+      const float rotCos = cr::cosf (rotDeg * kDeg2Rad);
+
+      // 4 угла рамки в локальных координатах (dy=yaw, dp=pitch): (+/-half, +/-half).
+      const float ys[4] = { -half, +half, +half, -half };
+      const float ps[4] = { -half, -half, +half, +half };
+
+      for (size_t c = 0; c < 4 && v < numRays; ++c) {
+         // Поворот точки рамки вокруг центра зрения.
+         const float dy = ys[c] * rotCos - ps[c] * rotSin;
+         const float dp = ys[c] * rotSin + ps[c] * rotCos;
+
+         Vector rayAngle;
+         rayAngle.x = cr::wrapAngle (basePitch + dp);
+         rayAngle.y = cr::wrapAngle (baseYaw + dy);
+         // z не используется forward(), но обнулим для порядка.
+         rayAngle.z = 0.0f;
+
+         TraceResult traceResult {};
+         const Vector targetPoint = eyesPoint + rayAngle.forward () * 4096.0f;
+         game.testLine (eyesPoint, targetPoint, TraceIgnore::Everything, ent (), &traceResult);
+         brain.getInput ().view[v].setSource (traceResult.flFraction);
+         ++v;
+      }
    }
 
-   // 3. Сбор ближайших видимых врагов, звуков и союзников
+   // 3. Сбор ближайших видимых врагов, звуков и союзников.
+   //    Важно: обходим ВСЕХ живых клиентов (людей и ботов), без фильтра по FL_FAKECLIENT.
+   //    В каждый из трёх массивов попадают 4 БЛИЖАЙШИХ к боту (а не первые попавшиеся).
    constexpr size_t kNumSlots = sizeof (brain.getInput ().nearestVisibleEnemies) / sizeof (brain.getInput ().nearestVisibleEnemies[0]);
 
    for (size_t i = 0; i < kNumSlots; ++i) {
@@ -3921,12 +3955,24 @@ void Bot::useAi () {
       outDistNorm = 1.0f - (dist / 4096.0f);
    };
 
-   size_t visEnemyIdx = 0, noiseIdx = 0, friendIdx = 0;
+   // Локальный буфер кандидатов: для каждого типа храним (дистанция, pitch, yaw, distNorm).
+   struct Candidate { float dist; float pitch; float yaw; float distNorm; };
+   constexpr size_t kMaxClients = kGameMaxPlayers + 1; // m_clients has exactly this size
+   Candidate visEnemies[kMaxClients];   size_t visEnemyCount = 0;
+   Candidate noises[kMaxClients];        size_t noiseCount = 0;
+   Candidate friends[kMaxClients];       size_t friendCount = 0;
+
    bool hasVisibleEnemy = false;
    float closestEnemyYawDiff = 180.0f;
    float closestEnemyPitchDiff = 89.0f;
 
+   // Ближайший видимый союзник — для наград за союзника в обзоре / слишком близко / в прицеле.
+   bool hasVisibleFriend = false;
+   float closestFriendDist = 1e9f;      // в игровых единицах
+   float closestFriendYawDiff = 180.0f; // угловое отклонение от прицела по yaw
+
    for (const auto &client : util.getClients ()) {
+      // Пропуск только себя/мёртвых/неиспользуемых. Никакой отсечки людей/ботов.
       if (!(client.flags & ClientFlags::Used) || !(client.flags & ClientFlags::Alive) || client.ent == ent ()) {
          continue;
       }
@@ -3934,60 +3980,174 @@ void Bot::useAi () {
       const Vector targetOrigin = client.ent->v.origin + client.ent->v.view_ofs;
       float relPitch = 0.0f, relYaw = 0.0f, distNorm = 0.0f;
 
-      if (client.team == m_team) {
-         if (friendIdx < kNumSlots && seesEntity (targetOrigin)) {
+      const bool sameTeam = (client.team == m_team);
+
+      if (sameTeam) {
+         // Союзник: видим — кандидат в nearestFriends.
+         if (seesEntity (targetOrigin) && friendCount < kMaxClients) {
             calcRelativeTarget (targetOrigin, relPitch, relYaw, distNorm);
-            brain.getInput ().nearestFriends[friendIdx].x.setSource (relPitch);
-            brain.getInput ().nearestFriends[friendIdx].y.setSource (relYaw);
-            brain.getInput ().nearestFriends[friendIdx].f.setSource (distNorm);
-            ++friendIdx;
+
+            // Отслеживаем ближайшего видимого союзника для наград (обзор/слишком близко/в прицеле).
+            const float realDist = (targetOrigin - eyesPoint).length ();
+            if (realDist < closestFriendDist) {
+               closestFriendDist = realDist;
+               closestFriendYawDiff = relYaw;
+               hasVisibleFriend = true;
+            }
+            friends[friendCount++] = { (1.0f - distNorm), relPitch, relYaw, distNorm };
+         }
+         continue;
+      }
+
+      // Враг: видим — кандидат в nearestVisibleEnemies; иначе — шум в nearestInvisibleEnemyNoises.
+      if (seesEntity (targetOrigin)) {
+         hasVisibleEnemy = true;
+         calcRelativeTarget (targetOrigin, relPitch, relYaw, distNorm);
+
+         if (cr::abs (relYaw) < cr::abs (closestEnemyYawDiff)) {
+            closestEnemyYawDiff = relYaw;
+            closestEnemyPitchDiff = relPitch;
+         }
+
+         if (visEnemyCount < kMaxClients) {
+            visEnemies[visEnemyCount++] = { (1.0f - distNorm), relPitch, relYaw, distNorm };
          }
       }
-      else {
-         if (seesEntity (targetOrigin)) {
-            hasVisibleEnemy = true;
-            calcRelativeTarget (targetOrigin, relPitch, relYaw, distNorm);
-
-            if (cr::abs (relYaw) < cr::abs (closestEnemyYawDiff)) {
-               closestEnemyYawDiff = relYaw;
-               closestEnemyPitchDiff = relPitch;
-            }
-
-            if (visEnemyIdx < kNumSlots) {
-               brain.getInput ().nearestVisibleEnemies[visEnemyIdx].x.setSource (relPitch);
-               brain.getInput ().nearestVisibleEnemies[visEnemyIdx].y.setSource (relYaw);
-               brain.getInput ().nearestVisibleEnemies[visEnemyIdx].f.setSource (distNorm);
-               ++visEnemyIdx;
-            }
-         }
-         else if (noiseIdx < kNumSlots && client.noise.last + 1.5f > game.time ()) {
-            calcRelativeTarget (client.noise.pos, relPitch, relYaw, distNorm);
-            brain.getInput ().nearestInvisibleEnemyNoises[noiseIdx].x.setSource (relPitch);
-            brain.getInput ().nearestInvisibleEnemyNoises[noiseIdx].y.setSource (relYaw);
-            brain.getInput ().nearestInvisibleEnemyNoises[noiseIdx].f.setSource (distNorm);
-            ++noiseIdx;
-         }
+      else if (client.noise.last + 1.5f > game.time () && noiseCount < kMaxClients) {
+         calcRelativeTarget (client.noise.pos, relPitch, relYaw, distNorm);
+         noises[noiseCount++] = { (1.0f - distNorm), relPitch, relYaw, distNorm };
       }
    }
+
+   // Сортировка выбором: ближайшие (наименьшая dist = наибольшая distNorm) — вперёд.
+   // Берём min(kNumSlots, count) элементов. Массивы маленькие, O(n*slots) дёшево.
+   auto fillNearest = [&] (Candidate *arr, size_t count, auto setter) {
+      const size_t take = count < kNumSlots ? count : kNumSlots;
+      for (size_t i = 0; i < take; ++i) {
+         size_t best = i;
+         for (size_t j = i + 1; j < count; ++j) {
+            if (arr[j].dist < arr[best].dist) {
+               best = j;
+            }
+         }
+         if (best != i) {
+            const Candidate tmp = arr[i]; arr[i] = arr[best]; arr[best] = tmp;
+         }
+         setter (i, arr[i].pitch, arr[i].yaw, arr[i].distNorm);
+      }
+   };
+
+   fillNearest (visEnemies, visEnemyCount, [&] (size_t i, float p, float y, float f) {
+      brain.getInput ().nearestVisibleEnemies[i].x.setSource (p);
+      brain.getInput ().nearestVisibleEnemies[i].y.setSource (y);
+      brain.getInput ().nearestVisibleEnemies[i].f.setSource (f);
+   });
+   fillNearest (noises, noiseCount, [&] (size_t i, float p, float y, float f) {
+      brain.getInput ().nearestInvisibleEnemyNoises[i].x.setSource (p);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].y.setSource (y);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].f.setSource (f);
+   });
+   fillNearest (friends, friendCount, [&] (size_t i, float p, float y, float f) {
+      brain.getInput ().nearestFriends[i].x.setSource (p);
+      brain.getInput ().nearestFriends[i].y.setSource (y);
+      brain.getInput ().nearestFriends[i].f.setSource (f);
+   });
 
    // 4. Формирование пошаговых наград (Reward Shaping)
-   const float frontRay = brain.getInput ().view[numRays / 2].getNormalized (); // центральный луч
-   const float speed2d = pev->velocity.length2d ();
+   //    В схеме "4 рамки по 4 точки" центральный (самый внутренний) квадрат — это
+   //    точки 12..15 (рамка 3, полуразмер 5.625°). Их среднее — близость препятствия
+   //    прямо по курсу ("фронт"). Внешняя рамка (точки 0..3, полуразмер 45°) — периферия.
+   const float frontRay =
+      (brain.getInput ().view[12].getNormalized () +
+       brain.getInput ().view[13].getNormalized () +
+       brain.getInput ().view[14].getNormalized () +
+       brain.getInput ().view[15].getNormalized ()) * 0.25f; // центральный квадрат
+   const float leftRay  = brain.getInput ().view[0].getNormalized (); // угол левого-верхнего сектора
+   const float rightRay = brain.getInput ().view[3].getNormalized (); // угол левого-нижнего сектора
+   (void) leftRay;  (void) rightRay; // зарезервированы под будущие награды
 
-   // Штраф за утыкание в стену и небольшая награда за бег по открытому пространству
-   if (frontRay < 0.05f) {
-      brain.addReward (-0.02f);
-   }
-   else if (speed2d > 100.0f && frontRay > 0.2f) {
-      brain.addReward (+0.002f);
+   // 1) Награда за удержание прицела на горизонте + штраф за задирание в небо/пол.
+   //    pev->v_angle.x == 0 — горизонт, |v_angle.x| == 89 — смотреть строго в пол/потолок.
+   //    horizQuality в [0;1]: 1 на горизонте, 0 на упоре в пол/потолок.
+   //    Даём положительную награду за близость к горизонтали (бота "тянет" опустить нос),
+   //    и нарастающий штраф при сильном отклонении — чтобы залипание в небо/пол стало
+   //    явно невыгодным.
+   const float horizQuality = 1.0f - (cr::abs (pev->v_angle.x) / 89.0f); // 1 на горизонте, 0 на упоре
+   brain.addReward (0.02f * horizQuality);                       // мягкий "магнит" к горизонту
+   if (horizQuality < 0.5f) {
+      // Сильно отклонился — квадратичный штраф, растущий к упору.
+      const float dev = 1.0f - horizQuality;                     // 0..0.5+ в зоне наказания
+      brain.addReward (-0.06f * dev * dev);
    }
 
-   // Награда за наведение прицела на видимого врага
+   // 2) Награда за движение вперед по открытому пространству и штраф за тупик.
+   //    changeSpeedX > 0.5 — идем вперед, < 0.5 — пятимся спиной назад.
+   const float forwardAction = brain.getOutput ().changeSpeedX.getNormalized () - 0.5f;
+
+   if (frontRay < 0.08f) {
+      // Уперлись в стену: штрафуем, чтобы бот учился отворачивать, а не стоять вплотную.
+      brain.addReward (-0.05f);
+   }
+   else if (forwardAction > 0.1f && frontRay > 0.15f) {
+      // Поощряем именно движение ЛИЦОМ ВПЕРЕД, пропорционально свободному пространству.
+      brain.addReward (0.015f * forwardAction * frontRay);
+   }
+   else if (forwardAction < -0.1f) {
+      // Легкий штраф за бессмысленное пячение спиной назад, когда врагов не видно.
+      if (!hasVisibleEnemy) {
+         brain.addReward (-0.01f);
+      }
+   }
+
+   // 3) Награда за наведение прицела на видимого врага
    if (hasVisibleEnemy)
    {
-      // Чем ближе прицел к врагу (от 180° до 0°), тем выше награда (до +0.03f за кадр)
       const float aimAccuracy = 1.0f - (cr::abs (closestEnemyYawDiff) / 180.0f);
-      brain.addReward (0.01f + 0.02f * aimAccuracy);
+      brain.addReward (0.02f + 0.04f * aimAccuracy);
+   }
+
+   // 4) Чек объёма видимости: среднее по всем 16 лучам.
+   //    Большая открытость (= много длинных лучей) — бонус за "хороший обзор".
+   //    Малая (= кругом стены вплотную) — штраф за "слепую зону".
+   {
+      float sum = 0.0f;
+      for (size_t v = 0; v < numRays; ++v) {
+         sum += brain.getInput ().view[v].getNormalized ();
+      }
+      const float openness = sum / static_cast <float> (numRays); // [0;1]
+      // Линейная симметрия вокруг 0.5: открытость > 0.5 — бонус, < 0.5 — штраф.
+      brain.addReward (0.04f * (openness - 0.5f));
+   }
+
+   // 5) Небольшой бонус за союзника в прямой видимости (стены не мешают, в конусе обзора).
+   //    Конус ±60° по yaw (фронтальная зона внимания).
+   if (hasVisibleFriend && cr::abs (closestFriendYawDiff) < 60.0f) {
+      brain.addReward (0.01f);
+   }
+
+   // 6) Штраф, если союзник слишком близко (ближе радиуса поражения гранатой ~ 4 м / 128 ед.).
+   //    Боязнь "задеть своего" осколками.
+   if (hasVisibleFriend && closestFriendDist < 128.0f) {
+      brain.addReward (-0.04f);
+   }
+
+   // 7) Штраф за союзника, маячащего перед прицелом (близко к оси взгляда, может закрыть обзор).
+   //    Узкий конус ±10° по yaw.
+   if (hasVisibleFriend && cr::abs (closestFriendYawDiff) < 10.0f) {
+      brain.addReward (-0.02f);
+   }
+
+   // 8) Бонус за перемещение: каждые ~2.5 м (≈100 ед.) от последней запомненной точки — награда,
+   //    и точка обновляется. Стимулирует исследовать карту, а не стоять на месте.
+   {
+      const Vector &cur = pev->origin;
+      const float movedSq = (cur - m_aiLastRewardOrigin).lengthSq ();
+      constexpr float kMoveStep = 100.0f;       // ~2.5 м в единицах HL
+      constexpr float kMoveStepSq = kMoveStep * kMoveStep;
+      if (movedSq >= kMoveStepSq) {
+         brain.addReward (0.02f);
+         m_aiLastRewardOrigin = cur;
+      }
    }
 
    // 5. Прогон нейросети и обучение
@@ -4030,6 +4190,17 @@ void Bot::useAi () {
    pev->v_angle.x += brain.getOutput ().changeViewAngleX.getSource ();
    pev->v_angle.y += brain.getOutput ().changeViewAngleY.getSource ();
    pev->v_angle.clampAngles ();
+
+   // Жёсткий ограничитель наклона по вертикали: строго вверх/строго вниз, без
+   // перекручивания через зенит/надир (как у обычного бота в changePitch).
+   // clampAngles() только наматывает pitch в [-180, 180) — поэтому зажимаем
+   // вручную в [-89, 89], чтобы камера не вращалась как уровень самолёта.
+   if (pev->v_angle.x > 89.0f) {
+      pev->v_angle.x = 89.0f;
+   }
+   else if (pev->v_angle.x < -89.0f) {
+      pev->v_angle.x = -89.0f;
+   }
 
    // Синхронизация углов 3D-модельки и камеры наблюдателя
    pev->angles.x = -pev->v_angle.x / 3.0f;
