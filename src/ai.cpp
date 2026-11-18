@@ -112,29 +112,41 @@ Output::Output()
 {
 }
 
+size_t Brain::global_id = 0;
+
 Brain::Brain()
 {
     settings.input_count = 65;
     settings.output_count = 9;
     settings.frame_count = 30;
-    settings.scale_stage_count = 3;
-    settings.hidden_actor_layer_size = 256;
-    settings.hidden_critic_layer_size = 64;
+    settings.scale_stage_count = 2;
+    settings.hidden_actor_layer_size = 64;
+    settings.hidden_critic_layer_size = 32;
     settings.sigma_k = 0.95;
-    settings.max_adaptation_step = 0.001;
-    settings.min_weight_value = -10;
-    settings.max_weight_value = +10;
-    settings.min_init_weight_value = -0.01;
-    settings.max_init_weight_value = +0.01;
+    settings.max_adaptation_step = 0.01;
+    settings.min_weight_value = -1000;
+    settings.max_weight_value = +1000;
+    settings.min_init_weight_value = -0.1;
+    settings.max_init_weight_value = +0.1;
 
-    brain = brain_new(settings);
+    char filename[128] {0};
+    id = global_id;
+    sprintf(filename, "bot.%zu.brain", global_id);
 
+    // Try to load brain from file.
+    brain = brain_load_from_file(filename);
     if (brain == NULL)
     {
-        fprintf(stderr, "%s, brain == NULL.\n", __func__);
-    }
+	brain = brain_new(settings);
 
-    brain_fill_weights_by_noise(brain);
+	if (brain == NULL)
+	{
+    	    fprintf(stderr, "%s, brain == NULL.\n", __func__);
+	    abort();
+	}
+	brain_fill_weights_by_noise(brain);
+	++global_id;
+    }
 }
 
 Brain::~Brain()
@@ -220,6 +232,19 @@ void Brain::tick()
     output.changeSpeedX.setNormalized(outputs[o++]);
     output.changeSpeedY.setNormalized(outputs[o++]);
     output.changeSpeedZ.setNormalized(outputs[o++]);
+
+    // Save brain to file every 1000 ticks.
+    if (tick_count++ == 1000)
+    {
+	tick_count = 0;
+	char filename[128]{0};
+	sprintf(filename, "bot.%zu.brain", id);
+	if (brain_save_to_file(brain, filename) == false)
+	{
+	    fprintf(stderr, "%s. brain_save_to_file() == false.\n", __func__);
+	    abort();
+	}
+    }
 }
 
 const Output &Brain::getOutput()
