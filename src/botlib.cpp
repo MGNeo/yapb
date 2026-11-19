@@ -4075,7 +4075,7 @@ void Bot::useAi () {
    //    что перевешивает все плюсы и заставляет сеть учиться держать горизонт.
    const float pitchDev = cr::abs (pev->v_angle.x) / 89.0f;          // 0 на горизонте, 1 на упоре
    brain.addReward (0.06f * (1.0f - pitchDev));                      // магнит к горизонту
-   brain.addReward (-0.3f * pitchDev);                              // линейный штраф (усилен ×3)
+   brain.addReward (-0.6f * pitchDev);                              // штраф за отклонение (усилен ×2)
 
    // 2) Награда за движение вперед по открытому пространству и штраф за спину/тупик.
    //    changeSpeedX > 0.5 — идем вперед, < 0.5 — пятимся спиной назад.
@@ -4098,31 +4098,33 @@ void Bot::useAi () {
       brain.addReward (0.06f * forwardAction); // forwardAction<0 => отрицательная награда
    }
 
-   // 2e) Непрерывный бонус за РЕАЛЬНУЮ скорость движения.
-   //     По РЕАЛЬНОЙ скорости движка (pev->velocity), не ordered. Порог снижен
-   //     до 5 (с 20) — даже лёгкое движение даёт плюс. Усилен до 0.08 (с 0.05).
-   //     Также бонус за ЛЮБОЕ движение (realSpeed), не только вперёд — стимул
-   //     сдвинуться с места, даже боком.
+   // 2e) Непрерывный бонус за РЕАЛЬНУЮ скорость + штраф за стояние.
    {
       const float realSpeed = pev->velocity.length2d ();
       const float realSpeedNorm = cr::min (realSpeed / 250.0f, 1.0f);
-      // Бонус за любое движение — бот должен двигаться, а не стоять.
       if (realSpeed > 5.0f) {
          brain.addReward (0.04f * realSpeedNorm);
       }
-      // Дополнительный бонус за движение ВПЕРЁД (проекция на forward).
       Vector fwd; pev->v_angle.angleVectors (&fwd, nullptr, nullptr);
       const float fwdSpeed = pev->velocity.x * fwd.x + pev->velocity.y * fwd.y;
       if (fwdSpeed > 5.0f) {
          brain.addReward (0.04f * realSpeedNorm);
       }
+      // Штраф за стояние в теснине: rsp<10 и fr<0.05 — бот застрял, штрафуем.
+      if (realSpeed < 10.0f && frontRay < 0.05f) {
+         brain.addReward (-0.02f);
+      }
+      // Бонус за НАМЕРЕНИЕ бежать (outF>0.5) — даже если бот стоит, сеть
+      // получает сигнал "бежать вперёд = плюс", и учится активировать outF.
+      if (forwardAction > 0.05f) {
+         brain.addReward (0.02f * forwardAction);
+      }
    }
 
    // 2b) Награда за отворот от стены в более открытую сторону.
-   //     РАДИКАЛЬНО усилена (0.15 -> 3.0): при малом openDiff (~0.02) даёт +0.06,
-   //     что перевешивает все штрафы за стену/stuck и даёт боту чёткий сигнал
-   //     "поворачивай в открытую сторону". Без этого бот бегает в стену, а не в коридор.
-   if (frontRay < 0.2f) {
+   //     Только когда стена близко (frontRay < 0.08) — иначе бот в коридоре крутится
+   //     за врагом и залипает. Коэффициент 1.0 (не 3.0) — не перевешивает штраф за край.
+   if (frontRay < 0.08f) {
       // Левая половина (yaw<0): view[0,3,7,10,11,14]; правая (yaw>0): view[1,2,5,8,9,12].
       const float leftOpen =
          (brain.getInput ().view[0].getNormalized () + brain.getInput ().view[3].getNormalized () +
@@ -4136,13 +4138,20 @@ void Bot::useAi () {
       // turnY: >0.5 — поворот вправо, <0.5 — влево. Согласуем с openDiff.
       const float turnDir = (brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f) * 2.0f; // -1..+1
       // Награда за согласованность направления поворота с более открытой стороной.
-      brain.addReward (3.0f * turnDir * openDiff);
+      brain.addReward (1.0f * turnDir * openDiff);
+   }
 
-      // 2c) Штраф за бег в стену: бот бежит вперёд (fa>0.05) но стена близко (frontRay<0.05).
-      //     Бот бежит в тупик — штрафовать, чтобы он учился сначала отворачивать, потом бежать.
-      if (forwardAction > 0.05f && frontRay < 0.05f) {
-         brain.addReward (-0.05f);
+   // 2f) Награда за РОСТ frontRay — бот отворачивает в сторону открытого пространства.
+   //     Когда стены со всех сторон, openDiff≈0 и отворот не даёт сигнала.
+   //     Но если bot повернул в сторону, где frontRay растёт — это правильно.
+   //     Сравниваем fr текущего тика с прошлым. Перезапуска не нужен — поле
+   //     инициализировано 0, и при fr>0 (любой коридор) сразу даёт плюс.
+   {
+      const float frDelta = frontRay - m_aiPrevFrontRay;
+      if (frDelta > 0.005f) {
+         brain.addReward (0.04f * frDelta * 20.0f); // нормируем: 0.01 рост -> +0.008
       }
+      m_aiPrevFrontRay = frontRay;
    }
 
    // 3) Награда за наведение прицела на видимого врага
@@ -4285,13 +4294,13 @@ void Bot::useAi () {
       pev->v_angle.x = -89.0f;
    }
 
-   // Мягкий возврат к горизонту при отклонении (>15°). Пока сеть не научилась
+   // Мягкий возврат к горизонту при отклонении (>8°). Пока сеть не научилась
    // держать горизонт, не даём v_angle.x накапливаться — подтягиваем к 0 на 4°/тик.
-   // Порог 15° (не 45°): при vax=15 hpen=-0.05 (терпимо), openH/fr выше.
-   if (pev->v_angle.x > 15.0f) {
+   // Порог 8°: при vax=8 hpen=-0.05, при vax=12 hpen=-0.08.
+   if (pev->v_angle.x > 8.0f) {
       pev->v_angle.x -= 4.0f;
    }
-   else if (pev->v_angle.x < -15.0f) {
+   else if (pev->v_angle.x < -8.0f) {
       pev->v_angle.x += 4.0f;
    }
 
