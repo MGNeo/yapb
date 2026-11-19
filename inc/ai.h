@@ -96,6 +96,8 @@ class Brain
     Output output{};
 
     float stepReward = 0.0f;
+    float lastReward = 0.0f;       // last reward passed to brain_tick (diagnostic)
+    float lastCriticValue = 0.0f; // last critic prediction (diagnostic)
 
     static size_t global_id;
     size_t id;
@@ -106,6 +108,12 @@ class Brain
 
     Input &getInput();
     const Output &getOutput();
+
+    size_t getId() const { return id; }
+    static void resetGlobalId() { global_id = 0; }
+
+    float getLastReward() const { return lastReward; }
+    float getLastCriticValue() const { return lastCriticValue; }
 
     void addReward(float reward)
     {

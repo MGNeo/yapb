@@ -3931,17 +3931,20 @@ void Bot::useAi () {
    constexpr size_t kNumSlots = sizeof (brain.getInput ().nearestVisibleEnemies) / sizeof (brain.getInput ().nearestVisibleEnemies[0]);
 
    for (size_t i = 0; i < kNumSlots; ++i) {
-      brain.getInput ().nearestVisibleEnemies[i].x.setSource (0.0f);
-      brain.getInput ().nearestVisibleEnemies[i].y.setSource (0.0f);
-      brain.getInput ().nearestVisibleEnemies[i].f.setSource (0.0f);
+      // Нейтральные значения: setNormalized(0.5) -> centered = 0 (отсутствие сигнала).
+      // ВАЖНО: setSource(0.0f) для f (SmartFloat(0,1)) давало normalized=0 -> centered=-1,
+      // мощный ложный сигнал "враг вплотную!", забивавший полезные сенсоры.
+      brain.getInput ().nearestVisibleEnemies[i].x.setNormalized (0.5f);
+      brain.getInput ().nearestVisibleEnemies[i].y.setNormalized (0.5f);
+      brain.getInput ().nearestVisibleEnemies[i].f.setNormalized (0.5f);
 
-      brain.getInput ().nearestInvisibleEnemyNoises[i].x.setSource (0.0f);
-      brain.getInput ().nearestInvisibleEnemyNoises[i].y.setSource (0.0f);
-      brain.getInput ().nearestInvisibleEnemyNoises[i].f.setSource (0.0f);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].x.setNormalized (0.5f);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].y.setNormalized (0.5f);
+      brain.getInput ().nearestInvisibleEnemyNoises[i].f.setNormalized (0.5f);
 
-      brain.getInput ().nearestFriends[i].x.setSource (0.0f);
-      brain.getInput ().nearestFriends[i].y.setSource (0.0f);
-      brain.getInput ().nearestFriends[i].f.setSource (0.0f);
+      brain.getInput ().nearestFriends[i].x.setNormalized (0.5f);
+      brain.getInput ().nearestFriends[i].y.setNormalized (0.5f);
+      brain.getInput ().nearestFriends[i].f.setNormalized (0.5f);
    }
 
    auto calcRelativeTarget = [&] (const Vector &targetPos, float &outPitch, float &outYaw, float &outDistNorm) {
@@ -4066,38 +4069,59 @@ void Bot::useAi () {
    const float rightRay = brain.getInput ().view[3].getNormalized (); // угол левого-нижнего сектора
    (void) leftRay;  (void) rightRay; // зарезервированы под будущие награды
 
-   // 1) Награда за удержание прицела на горизонте + ЛИНЕЙНЫЙ штраф за отклонение.
+   // 1) Награда за удержание прицела на горизонте + штраф за отклонение.
    //    pev->v_angle.x == 0 — горизонт, |v_angle.x| == 89 — смотреть строго в пол/потолок.
-   //    Линейный штраф начинается сразу от 0 (нет "мёртвой зоны" у центра, где
-   //    бот безнаказанно задирает голову). Растёт к упору, перебивая ложный бонус
-   //    за openness от верхних лучей.
+   //    Усилено: при vax=-56 hpen=-0.063 съедал весь плюс. -0.3 даёт -0.19 при упоре,
+   //    что перевешивает все плюсы и заставляет сеть учиться держать горизонт.
    const float pitchDev = cr::abs (pev->v_angle.x) / 89.0f;          // 0 на горизонте, 1 на упоре
-   brain.addReward (0.03f * (1.0f - pitchDev));                      // слабый магнит к горизонту
-   brain.addReward (-0.1f * pitchDev);                              // линейный штраф, без мёртвой зоны
+   brain.addReward (0.06f * (1.0f - pitchDev));                      // магнит к горизонту
+   brain.addReward (-0.3f * pitchDev);                              // линейный штраф (усилен ×3)
 
    // 2) Награда за движение вперед по открытому пространству и штраф за спину/тупик.
    //    changeSpeedX > 0.5 — идем вперед, < 0.5 — пятимся спиной назад.
    const float forwardAction = brain.getOutput ().changeSpeedX.getNormalized () - 0.5f;
 
-   if (frontRay < 0.08f) {
-      // Уперлись в стену: штрафуем, чтобы бот учился отворачивать, а не стоять вплотную.
-      brain.addReward (-0.08f);
+   if (frontRay < 0.05f) {
+      // Уперлись в стену: штраф ПРОПОРЦИОНАЛЬНО близости (чем ближе — тем больнее).
+      // frontRay=0.005 -> почти -0.03, frontRay=0.04 -> -0.006. Линейно затухает
+      // к 0 при frontRay=0.05, чтобы дать бонусу за скорость работать сразу.
+      brain.addReward (-0.03f * (1.0f - frontRay / 0.05f));
    }
-   else if (forwardAction > 0.1f && frontRay > 0.15f) {
-      // Поощряем именно движение ЛИЦОМ ВПЕРЕД, пропорционально свободному пространству.
-      brain.addReward (0.04f * forwardAction * frontRay);
+   else if (forwardAction > 0.0f) {
+      // Поощряем движение ЛИЦОМ ВПЕРЕД — любой forwardAction>0 (outFwd>0.5).
+      // Порог снижен с 0.1 до 0.0: даже лёгкое движение вперёд поощряется.
+      brain.addReward (0.40f * forwardAction * frontRay);
    }
 
    // Штраф за пячение спиной назад — ВСЕГДА, даже при видимых врагах.
-   if (forwardAction < -0.1f) {
-      brain.addReward (0.06f * forwardAction); // forwardAction<0 => отрицательная награда, ~-0.03 max
+   if (forwardAction < -0.05f) {
+      brain.addReward (0.06f * forwardAction); // forwardAction<0 => отрицательная награда
+   }
+
+   // 2e) Непрерывный бонус за РЕАЛЬНУЮ скорость движения.
+   //     По РЕАЛЬНОЙ скорости движка (pev->velocity), не ordered. Порог снижен
+   //     до 5 (с 20) — даже лёгкое движение даёт плюс. Усилен до 0.08 (с 0.05).
+   //     Также бонус за ЛЮБОЕ движение (realSpeed), не только вперёд — стимул
+   //     сдвинуться с места, даже боком.
+   {
+      const float realSpeed = pev->velocity.length2d ();
+      const float realSpeedNorm = cr::min (realSpeed / 250.0f, 1.0f);
+      // Бонус за любое движение — бот должен двигаться, а не стоять.
+      if (realSpeed > 5.0f) {
+         brain.addReward (0.04f * realSpeedNorm);
+      }
+      // Дополнительный бонус за движение ВПЕРЁД (проекция на forward).
+      Vector fwd; pev->v_angle.angleVectors (&fwd, nullptr, nullptr);
+      const float fwdSpeed = pev->velocity.x * fwd.x + pev->velocity.y * fwd.y;
+      if (fwdSpeed > 5.0f) {
+         brain.addReward (0.04f * realSpeedNorm);
+      }
    }
 
    // 2b) Награда за отворот от стены в более открытую сторону.
-   //     Когда впереди стена (frontRay мал), сравниваем открытость левой и правой
-   //     половин поля зрения и поощряем поворот носа в более открытую сторону.
-   //     Это дает ботам "направление градиента" из тупика в открытый коридор,
-   //     без которого они застревают в локальном оптимуме "уперся и кружится".
+   //     РАДИКАЛЬНО усилена (0.15 -> 3.0): при малом openDiff (~0.02) даёт +0.06,
+   //     что перевешивает все штрафы за стену/stuck и даёт боту чёткий сигнал
+   //     "поворачивай в открытую сторону". Без этого бот бегает в стену, а не в коридор.
    if (frontRay < 0.2f) {
       // Левая половина (yaw<0): view[0,3,7,10,11,14]; правая (yaw>0): view[1,2,5,8,9,12].
       const float leftOpen =
@@ -4112,7 +4136,13 @@ void Bot::useAi () {
       // turnY: >0.5 — поворот вправо, <0.5 — влево. Согласуем с openDiff.
       const float turnDir = (brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f) * 2.0f; // -1..+1
       // Награда за согласованность направления поворота с более открытой стороной.
-      brain.addReward (0.05f * turnDir * openDiff);
+      brain.addReward (3.0f * turnDir * openDiff);
+
+      // 2c) Штраф за бег в стену: бот бежит вперёд (fa>0.05) но стена близко (frontRay<0.05).
+      //     Бот бежит в тупик — штрафовать, чтобы он учился сначала отворачивать, потом бежать.
+      if (forwardAction > 0.05f && frontRay < 0.05f) {
+         brain.addReward (-0.05f);
+      }
    }
 
    // 3) Награда за наведение прицела на видимого врага
@@ -4133,8 +4163,10 @@ void Bot::useAi () {
           brain.getInput ().view[7].getNormalized () +
           brain.getInput ().view[12].getNormalized () +
           brain.getInput ().view[14].getNormalized ()) * 0.25f; // [0;1]
-      // Линейная симметрия вокруг 0.5: открытость > 0.5 — бонус, < 0.5 — штраф.
-      brain.addReward (0.04f * (openness - 0.5f));
+      // Нейтраль сдвинута с 0.5 на 0.10: в обычном коридоре openness ~0.08-0.15,
+      // поэтому 0.5 давало стабильный штраф даже посреди нормального коридора.
+      // Теперь тупик (openness < 0.10) штрафуется, коридор (> 0.10) — бонус.
+      brain.addReward (0.08f * (openness - 0.10f));
    }
 
    // 5) Небольшой бонус за союзника в прямой видимости (стены не мешают, в конусе обзора).
@@ -4144,15 +4176,16 @@ void Bot::useAi () {
    }
 
    // 6) Штраф, если союзник слишком близко (ближе радиуса поражения гранатой ~ 4 м / 128 ед.).
-   //    Боязнь "задеть своего" осколками.
+   //    Боязнь "задеть своего" осколками. Ослаблен: боты обязаны бежать группой со спавна,
+   //    сильный штраф заставляет их шарахаться от команды в углы.
    if (hasVisibleFriend && closestFriendDist < 128.0f) {
-      brain.addReward (-0.04f);
+      brain.addReward (-0.005f);
    }
 
    // 7) Штраф за союзника, маячащего перед прицелом (близко к оси взгляда, может закрыть обзор).
-   //    Узкий конус ±10° по yaw.
+   //    Узкий конус ±10° по yaw. Ослаблен: на спавне союзники всегда в прицеле.
    if (hasVisibleFriend && cr::abs (closestFriendYawDiff) < 10.0f) {
-      brain.addReward (-0.02f);
+      brain.addReward (-0.005f);
    }
 
    // 8) Бонус за перемещение: каждые ~2.5 м (≈100 ед.) от последней запомненной точки — награда,
@@ -4174,7 +4207,7 @@ void Bot::useAi () {
    {
       const float turnX = brain.getOutput ().changeViewAngleX.getNormalized () - 0.5f;
       const float turnY = brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f;
-      brain.addReward (-0.1f * (turnX * turnX + turnY * turnY));
+      brain.addReward (-0.02f * (turnX * turnX + turnY * turnY));
 
       // 9b) Бонус за прямолинейность: идём вперёд и почти не вращаем камеру.
       if (forwardAction > 0.1f && cr::abs (turnY) < 0.15f) {
@@ -4189,8 +4222,20 @@ void Bot::useAi () {
       const float orderedStrafe = cr::abs (brain.getOutput ().changeSpeedY.getSource ());
       const float realSpeedSq = pev->velocity.lengthSq2d ();
       if ((orderedFwd > 30.0f || orderedStrafe > 30.0f) && realSpeedSq < 2500.0f) {
-         brain.addReward (-0.04f);
+         brain.addReward (-0.015f);
       }
+   }
+
+   // 10b) Штраф за залипание yaw в крайних значениях + бонус за "прямо".
+   //     outY > 0.8 или < 0.2 — бот упорно крутится в одну сторону,
+   //     что признак залипания (сеть выучила "всегда крути вправо = плюс").
+   //     Штраф за край + бонус за центр (0.5) — отучает залипать, поощряет "прямо".
+   {
+      const float outY = brain.getOutput ().changeViewAngleY.getNormalized ();
+      const float yawDev = outY - 0.5f; // -0.5..+0.5, 0 = прямо
+      // Квадратичный штраф за край + линейный бонус за центр.
+      // При |yawDev|>0.3 (край) штраф -0.03..-0.115, при yawDev=0 бонус +0.01.
+      brain.addReward (0.01f - 0.5f * yawDev * yawDev);
    }
 
    // 11) Штраф за стрельбу впустую (если выход fire был активен, но врагов не видно).
@@ -4240,19 +4285,39 @@ void Bot::useAi () {
       pev->v_angle.x = -89.0f;
    }
 
+   // Мягкий возврат к горизонту при отклонении (>15°). Пока сеть не научилась
+   // держать горизонт, не даём v_angle.x накапливаться — подтягиваем к 0 на 4°/тик.
+   // Порог 15° (не 45°): при vax=15 hpen=-0.05 (терпимо), openH/fr выше.
+   if (pev->v_angle.x > 15.0f) {
+      pev->v_angle.x -= 4.0f;
+   }
+   else if (pev->v_angle.x < -15.0f) {
+      pev->v_angle.x += 4.0f;
+   }
+
    // Синхронизация углов 3D-модельки и камеры наблюдателя
    pev->angles.x = -pev->v_angle.x / 3.0f;
    pev->angles.y = pev->v_angle.y;
    pev->angles.z = 0.0f;
    pev->fixangle = 1;
-   if (index () == 1) {
+   if (brain.getId () == 0) {
       static float nextPrint = 0.0f;
       if (nextPrint < game.time ()) {
-         printf ("[AI] outPitch=%.3f | outYaw=%.3f | outFwd=%.3f | frontRay=%.3f\n",
+         const float rwd = brain.getLastReward ();
+         const float crt = brain.getLastCriticValue ();
+         // Состояние для диагностики.
+         const float vax = pev->v_angle.x;
+         const float openH =
+            (brain.getInput ().view[5].getNormalized () +
+             brain.getInput ().view[7].getNormalized () +
+             brain.getInput ().view[12].getNormalized () +
+             brain.getInput ().view[14].getNormalized ()) * 0.25f;
+         const float realSp = pev->velocity.length2d ();
+         printf ("[AI] outP=%.3f outY=%.3f outF=%.3f fr=%.3f | rwd=%+.4f crt=%+.4f rpe=%+.4f | vax=%.1f openH=%.3f rsp=%.0f\n",
             brain.getOutput ().changeViewAngleX.getNormalized (),
             brain.getOutput ().changeViewAngleY.getNormalized (),
             brain.getOutput ().changeSpeedX.getNormalized (),
-            frontRay);
+            frontRay, rwd, crt, rwd - crt, vax, openH, realSp);
          nextPrint = game.time () + 1.0f;
       }
    }

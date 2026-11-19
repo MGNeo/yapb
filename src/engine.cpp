@@ -53,6 +53,10 @@ void Game::levelInitialize (edict_t *entities, int max) {
    // re-initialize bot's array
    bots.destroy ();
 
+   // reset AI brain id counter so bots load bot.0.brain..bot.9.brain on the new map
+   // (otherwise global_id grows monotonically and weights are lost on map change)
+   ai::Brain::resetGlobalId ();
+
    // startup threaded worker
    worker.startup (cv_threadpool_workers.int_ ());
 
