@@ -125,7 +125,7 @@ Brain::Brain()
     settings.critic_neuron_count = 96;
     // Multi-scale activity traces: windows ~1, 2, 4, 8 ticks.
     settings.trace_count = 4;
-    settings.max_adaptation_step = 0.002f;
+    settings.max_adaptation_step = 0.006f;
 
     char filename[128] {0};
     id = global_id;

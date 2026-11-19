@@ -4069,34 +4069,31 @@ void Bot::useAi () {
    // 1) Награда за удержание прицела на горизонте + штраф за задирание в небо/пол.
    //    pev->v_angle.x == 0 — горизонт, |v_angle.x| == 89 — смотреть строго в пол/потолок.
    //    horizQuality в [0;1]: 1 на горизонте, 0 на упоре в пол/потолок.
-   //    Даём положительную награду за близость к горизонтали (бота "тянет" опустить нос),
-   //    и нарастающий штраф при сильном отклонении — чтобы залипание в небо/пол стало
-   //    явно невыгодным.
+   //    Магнит к горизонту (всегда) + квадратичный штраф за отклонение (всегда, растёт к упору).
    const float horizQuality = 1.0f - (cr::abs (pev->v_angle.x) / 89.0f); // 1 на горизонте, 0 на упоре
-   brain.addReward (0.02f * horizQuality);                       // мягкий "магнит" к горизонту
-   if (horizQuality < 0.5f) {
-      // Сильно отклонился — квадратичный штраф, растущий к упору.
-      const float dev = 1.0f - horizQuality;                     // 0..0.5+ в зоне наказания
-      brain.addReward (-0.06f * dev * dev);
+   brain.addReward (0.05f * horizQuality);                        // сильный "магнит" к горизонту
+   {
+      // Штраф за отклонение всегда, квадратично растёт к упору.
+      const float dev = 1.0f - horizQuality;                      // 0 на горизонте, 1 на упоре
+      brain.addReward (-0.15f * dev * dev);
    }
 
-   // 2) Награда за движение вперед по открытому пространству и штраф за тупик.
+   // 2) Награда за движение вперед по открытому пространству и штраф за спину/тупик.
    //    changeSpeedX > 0.5 — идем вперед, < 0.5 — пятимся спиной назад.
    const float forwardAction = brain.getOutput ().changeSpeedX.getNormalized () - 0.5f;
 
    if (frontRay < 0.08f) {
       // Уперлись в стену: штрафуем, чтобы бот учился отворачивать, а не стоять вплотную.
-      brain.addReward (-0.05f);
+      brain.addReward (-0.08f);
    }
    else if (forwardAction > 0.1f && frontRay > 0.15f) {
       // Поощряем именно движение ЛИЦОМ ВПЕРЕД, пропорционально свободному пространству.
-      brain.addReward (0.015f * forwardAction * frontRay);
+      brain.addReward (0.04f * forwardAction * frontRay);
    }
-   else if (forwardAction < -0.1f) {
-      // Легкий штраф за бессмысленное пячение спиной назад, когда врагов не видно.
-      if (!hasVisibleEnemy) {
-         brain.addReward (-0.01f);
-      }
+
+   // Штраф за пячение спиной назад — ВСЕГДА, даже при видимых врагах.
+   if (forwardAction < -0.1f) {
+      brain.addReward (0.06f * forwardAction); // forwardAction<0 => отрицательная награда, ~-0.03 max
    }
 
    // 3) Награда за наведение прицела на видимого врага
@@ -4156,10 +4153,30 @@ void Bot::useAi () {
    // 6. Применение выходов нейросети к телу бота
    resetMovement ();
 
-   // Легкий штраф за бессмысленное вращение камерой на месте («головокружение»)
+   // Штраф за вращение камерой («головокружение» / хождение кругами).
+   // Усилен: круговое вращение — главный источник "ходят кругами".
    const float turnX = brain.getOutput ().changeViewAngleX.getNormalized () - 0.5f;
    const float turnY = brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f;
-   brain.addReward (-0.005f * (turnX * turnX + turnY * turnY));
+   brain.addReward (-0.02f * (turnX * turnX + turnY * turnY));
+
+   // Бонус за прямолинейность: идём вперёд и почти не вращаем камеру.
+   // Стимулирует "идти прямо, а не кружиться".
+   if (forwardAction > 0.1f && cr::abs (turnY) < 0.15f) {
+      brain.addReward (0.015f);
+   }
+
+   // Штраф за "упёрся, но хочет двигаться": бот заказывает ненулевую скорость
+   // (ходьба/стрейф), но реальная скорость движка ~0 — значит, упёрся в невидимую
+   // ступеньку, союзника или препятствие, которое лучи не поймали (стены сбоку/под ногами).
+   {
+      const float orderedFwd = cr::abs (brain.getOutput ().changeSpeedX.getSource ());   // -250..+250
+      const float orderedStrafe = cr::abs (brain.getOutput ().changeSpeedY.getSource ());
+      const float realSpeedSq = pev->velocity.lengthSq2d ();                          // только XY (горизонталь)
+      // Заказал движение (>~30 ед/с) но по факту почти не двигается (<~50 ед/с).
+      if ((orderedFwd > 30.0f || orderedStrafe > 30.0f) && realSpeedSq < 2500.0f) {
+         brain.addReward (-0.04f);
+      }
+   }
 
    if (brain.getOutput ().fire.getNormalized () > 0.5f) {
       pev->button |= IN_ATTACK;

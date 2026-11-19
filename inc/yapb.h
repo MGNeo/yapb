@@ -333,6 +333,8 @@ private:
    Vector m_aimLastError {}; // last calculated aim error
    Vector m_prevOrigin {}; // origin some frames before
    Vector m_aiLastRewardOrigin {}; // origin remembered for AI movement reward
+   Vector m_aiPrevTickOrigin {}; // origin at previous AI tick (stuck detection)
+   bool m_aiPrevTickValid {}; // whether m_aiPrevTickOrigin is initialized
    Vector m_lookAt {}; // vector bot should look at
    Vector m_throw {}; // origin of node to throw grenades
    Vector m_enemyOrigin {}; // target origin chosen for shooting
