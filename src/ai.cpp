@@ -103,9 +103,9 @@ Input::Input()
 
 Output::Output()
     : fire(0, 1), reload(0, 1), shift(0, 1), alt(0, 1),
-      changeViewAngleX(-5.0f, +5.0f), // Макс. поворот по вертикали за 1 шаг (плавно, без юлы)
-      changeViewAngleY(-12.0f,
-                       +12.0f),      // Макс. поворот по горизонтали за 1 шаг (плавно)
+      changeViewAngleX(-2.5f, +2.5f), // Макс. поворот по вертикали за 1 шаг (плавно, без юлы)
+      changeViewAngleY(-5.0f,
+                       +5.0f),        // Макс. поворот по горизонтали за 1 шаг (плавно)
       changeSpeedX(-250.0f, +250.0f), // Вперед / Назад (forwardmove)
       changeSpeedY(-250.0f, +250.0f), // Влево / Вправо (sidemove)
       changeSpeedZ(-200.0f, +200.0f)  // Вверх / Вниз (upmove)
@@ -230,6 +230,23 @@ void Brain::tick()
     output.changeSpeedX.setNormalized(outputs[o++]);
     output.changeSpeedY.setNormalized(outputs[o++]);
     output.changeSpeedZ.setNormalized(outputs[o++]);
+
+    // Exploration noise: к моторным выходам актора добавляем небольшой равномерный
+    // шум, чтобы у детерминированной сети был шанс "попробовать" другое действие.
+    // Без этого сеть залипает в одном действии (правило Хебба усиливает текущую
+    // активность, и выхода никогда не меняется, чтобы RPE могла его сдвинуть).
+    // Шум ±0.1 к нормализованному значению, с клампом в [0,1].
+    auto noisy = [] (float v) -> float {
+        const float noise = (static_cast <float> (rand ()) / static_cast <float> (RAND_MAX) - 0.5f) * 0.2f; // ±0.1
+        v += noise;
+        if (v < 0.0f) return 0.0f;
+        if (v > 1.0f) return 1.0f;
+        return v;
+    };
+    output.changeViewAngleX.setNormalized(noisy(output.changeViewAngleX.getNormalized()));
+    output.changeViewAngleY.setNormalized(noisy(output.changeViewAngleY.getNormalized()));
+    output.changeSpeedX.setNormalized(noisy(output.changeSpeedX.getNormalized()));
+    output.changeSpeedY.setNormalized(noisy(output.changeSpeedY.getNormalized()));
 
     // Save brain to file every 1000 ticks.
     if (tick_count++ == 1000)

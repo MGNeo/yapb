@@ -4066,17 +4066,14 @@ void Bot::useAi () {
    const float rightRay = brain.getInput ().view[3].getNormalized (); // угол левого-нижнего сектора
    (void) leftRay;  (void) rightRay; // зарезервированы под будущие награды
 
-   // 1) Награда за удержание прицела на горизонте + штраф за задирание в небо/пол.
+   // 1) Награда за удержание прицела на горизонте + ЛИНЕЙНЫЙ штраф за отклонение.
    //    pev->v_angle.x == 0 — горизонт, |v_angle.x| == 89 — смотреть строго в пол/потолок.
-   //    horizQuality в [0;1]: 1 на горизонте, 0 на упоре в пол/потолок.
-   //    Магнит к горизонту (всегда) + квадратичный штраф за отклонение (всегда, растёт к упору).
-   const float horizQuality = 1.0f - (cr::abs (pev->v_angle.x) / 89.0f); // 1 на горизонте, 0 на упоре
-   brain.addReward (0.05f * horizQuality);                        // сильный "магнит" к горизонту
-   {
-      // Штраф за отклонение всегда, квадратично растёт к упору.
-      const float dev = 1.0f - horizQuality;                      // 0 на горизонте, 1 на упоре
-      brain.addReward (-0.15f * dev * dev);
-   }
+   //    Линейный штраф начинается сразу от 0 (нет "мёртвой зоны" у центра, где
+   //    бот безнаказанно задирает голову). Растёт к упору, перебивая ложный бонус
+   //    за openness от верхних лучей.
+   const float pitchDev = cr::abs (pev->v_angle.x) / 89.0f;          // 0 на горизонте, 1 на упоре
+   brain.addReward (0.03f * (1.0f - pitchDev));                      // слабый магнит к горизонту
+   brain.addReward (-0.1f * pitchDev);                              // линейный штраф, без мёртвой зоны
 
    // 2) Награда за движение вперед по открытому пространству и штраф за спину/тупик.
    //    changeSpeedX > 0.5 — идем вперед, < 0.5 — пятимся спиной назад.
@@ -4096,6 +4093,28 @@ void Bot::useAi () {
       brain.addReward (0.06f * forwardAction); // forwardAction<0 => отрицательная награда, ~-0.03 max
    }
 
+   // 2b) Награда за отворот от стены в более открытую сторону.
+   //     Когда впереди стена (frontRay мал), сравниваем открытость левой и правой
+   //     половин поля зрения и поощряем поворот носа в более открытую сторону.
+   //     Это дает ботам "направление градиента" из тупика в открытый коридор,
+   //     без которого они застревают в локальном оптимуме "уперся и кружится".
+   if (frontRay < 0.2f) {
+      // Левая половина (yaw<0): view[0,3,7,10,11,14]; правая (yaw>0): view[1,2,5,8,9,12].
+      const float leftOpen =
+         (brain.getInput ().view[0].getNormalized () + brain.getInput ().view[3].getNormalized () +
+          brain.getInput ().view[7].getNormalized () + brain.getInput ().view[10].getNormalized () +
+          brain.getInput ().view[11].getNormalized () + brain.getInput ().view[14].getNormalized ()) / 6.0f;
+      const float rightOpen =
+         (brain.getInput ().view[1].getNormalized () + brain.getInput ().view[2].getNormalized () +
+          brain.getInput ().view[5].getNormalized () + brain.getInput ().view[8].getNormalized () +
+          brain.getInput ().view[9].getNormalized () + brain.getInput ().view[12].getNormalized ()) / 6.0f;
+      const float openDiff = rightOpen - leftOpen; // >0 — правее открытее, <0 — левее
+      // turnY: >0.5 — поворот вправо, <0.5 — влево. Согласуем с openDiff.
+      const float turnDir = (brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f) * 2.0f; // -1..+1
+      // Награда за согласованность направления поворота с более открытой стороной.
+      brain.addReward (0.05f * turnDir * openDiff);
+   }
+
    // 3) Награда за наведение прицела на видимого врага
    if (hasVisibleEnemy)
    {
@@ -4103,15 +4122,17 @@ void Bot::useAi () {
       brain.addReward (0.02f + 0.04f * aimAccuracy);
    }
 
-   // 4) Чек объёма видимости: среднее по всем 16 лучам.
-   //    Большая открытость (= много длинных лучей) — бонус за "хороший обзор".
-   //    Малая (= кругом стены вплотную) — штраф за "слепую зону".
+   // 4) Чек объёма видимости: только по ГОРИЗОНТАЛЬНЫМ лучам (pitch≈0).
+   //    view[5],view[7] (рамка 1), view[12],view[14] (рамка 3) — у них dp(pitch)≈0,
+   //    то есть они смотрят по горизонту. Использование только их исключает
+   //    reward hacking: бот не получает бонус за "задрать голову в небо",
+   //    где верхние лучи улетают на 4096 и дают ложный openness=1.
    {
-      float sum = 0.0f;
-      for (size_t v = 0; v < numRays; ++v) {
-         sum += brain.getInput ().view[v].getNormalized ();
-      }
-      const float openness = sum / static_cast <float> (numRays); // [0;1]
+      const float openness =
+         (brain.getInput ().view[5].getNormalized () +
+          brain.getInput ().view[7].getNormalized () +
+          brain.getInput ().view[12].getNormalized () +
+          brain.getInput ().view[14].getNormalized ()) * 0.25f; // [0;1]
       // Линейная симметрия вокруг 0.5: открытость > 0.5 — бонус, < 0.5 — штраф.
       brain.addReward (0.04f * (openness - 0.5f));
    }
@@ -4147,44 +4168,44 @@ void Bot::useAi () {
       }
    }
 
-   // 5. Прогон нейросети и обучение
-   brain.tick ();
+   // 9) Штраф за вращение камерой («головокружение» / хождение кругами).
+   //    Награда за ПРЕДЫДУЩЕЕ действие (выходы прошлoго тика, уже применённые).
+   //    turnX/turnY в [-0.5;+0.5], квадрат до 0.25, ×0.1 -> до -0.025.
+   {
+      const float turnX = brain.getOutput ().changeViewAngleX.getNormalized () - 0.5f;
+      const float turnY = brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f;
+      brain.addReward (-0.1f * (turnX * turnX + turnY * turnY));
 
-   // 6. Применение выходов нейросети к телу бота
-   resetMovement ();
-
-   // Штраф за вращение камерой («головокружение» / хождение кругами).
-   // Усилен: круговое вращение — главный источник "ходят кругами".
-   const float turnX = brain.getOutput ().changeViewAngleX.getNormalized () - 0.5f;
-   const float turnY = brain.getOutput ().changeViewAngleY.getNormalized () - 0.5f;
-   brain.addReward (-0.02f * (turnX * turnX + turnY * turnY));
-
-   // Бонус за прямолинейность: идём вперёд и почти не вращаем камеру.
-   // Стимулирует "идти прямо, а не кружиться".
-   if (forwardAction > 0.1f && cr::abs (turnY) < 0.15f) {
-      brain.addReward (0.015f);
+      // 9b) Бонус за прямолинейность: идём вперёд и почти не вращаем камеру.
+      if (forwardAction > 0.1f && cr::abs (turnY) < 0.15f) {
+         brain.addReward (0.015f);
+      }
    }
 
-   // Штраф за "упёрся, но хочет двигаться": бот заказывает ненулевую скорость
-   // (ходьба/стрейф), но реальная скорость движка ~0 — значит, упёрся в невидимую
-   // ступеньку, союзника или препятствие, которое лучи не поймали (стены сбоку/под ногами).
+   // 10) Штраф за "упёрся, но хочет двигаться": бот заказывает ненулевую скорость,
+   //     но реальная скорость движка ~0 — упёрся в невидимую ступеньку/союзника.
    {
-      const float orderedFwd = cr::abs (brain.getOutput ().changeSpeedX.getSource ());   // -250..+250
+      const float orderedFwd = cr::abs (brain.getOutput ().changeSpeedX.getSource ());
       const float orderedStrafe = cr::abs (brain.getOutput ().changeSpeedY.getSource ());
-      const float realSpeedSq = pev->velocity.lengthSq2d ();                          // только XY (горизонталь)
-      // Заказал движение (>~30 ед/с) но по факту почти не двигается (<~50 ед/с).
+      const float realSpeedSq = pev->velocity.lengthSq2d ();
       if ((orderedFwd > 30.0f || orderedStrafe > 30.0f) && realSpeedSq < 2500.0f) {
          brain.addReward (-0.04f);
       }
    }
 
+   // 11) Штраф за стрельбу впустую (если выход fire был активен, но врагов не видно).
+   if (brain.getOutput ().fire.getNormalized () > 0.5f && !hasVisibleEnemy) {
+      brain.addReward (-0.03f);
+   }
+
+   // 5. Прогон нейросети и обучение (награды за ПРЕДЫДУЩЕЕ действие уже накоплены)
+   brain.tick ();
+
+   // 6. Применение выходов нейросети к телу бота
+   resetMovement ();
+
    if (brain.getOutput ().fire.getNormalized () > 0.5f) {
       pev->button |= IN_ATTACK;
-
-      // Небольшой штраф за стрельбу впустую, если врагов в поле зрения нет
-      if (!hasVisibleEnemy) {
-         brain.addReward (-0.03f);
-      }
    }
 
    if (brain.getOutput ().reload.getNormalized () > 0.5f) {
